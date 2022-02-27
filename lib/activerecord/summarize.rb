@@ -15,7 +15,8 @@ module ActiveRecord::Summarize
     end
 
     def process(&block)
-      block_result = yield SummarizingProxy.new(self, @relation)
+      ungrouped_for_clear_group_resolution = @relation.unscope(:group)
+      block_result = yield SummarizingProxy.new(self, ungrouped_for_clear_group_resolution)
       resolve(block_result, block.binding)
     end
 
@@ -38,27 +39,62 @@ module ActiveRecord::Summarize
     end
 
     # :where, :joins, and :left_outer_joins are the only use cases I've seen IRL
-    BASE_QUERY_PARTS = [:where, :limit, :offset, :joins, :left_outer_joins, :from, :optimizer_hints]
-    AGGREGATE_FROM_WHERE_PARTS = [:where, :joins, :left_outer_joins, :from]
+    BASE_QUERY_PARTS = [:where, :limit, :offset, :joins, :left_outer_joins, :from, :order, :optimizer_hints]
+    AGGREGATE_FROM_WHERE_PARTS = [:where, :joins, :left_outer_joins, :from, :order]
 
     def resolve(block_value,block_context)
-      # groups = []
-      # plucks = []
+      futures = @futures.to_a
+      
+      # Build & execute query
       base_from_where = @relation.only(*BASE_QUERY_PARTS)
-      full_from_where = block_value.
+      # puts base_from_where.to_sql
+      full_from_where = futures.
         map {|f| f.relation.only(*AGGREGATE_FROM_WHERE_PARTS) }.
         inject(base_from_where) {|f, memo| memo.or(f) }
-      base_group = @relation.group_values
-      groups = base_group + block_value.map {|f| f.relation.group_values }.flatten.uniq
+      base_groups = @relation.group_values
+      groups = futures.inject(Set.new(base_groups)) {|g,f| g.merge(f.relation.group_values) }.to_a
       grouped_query = groups.any? ? full_from_where.group(*groups) : full_from_where
-      plucks = block_value.map {|f| f.select_value(@relation) }
-      result = grouped_query.pluck(*groups,*plucks)
-      [groups, result]
+      value_selects = futures.map {|f| f.select_value(@relation) }
+      data = grouped_query.pluck(*groups,*value_selects)
+      # puts [groups, data].inspect # debug
+      
+      # Aggregate & assign results
+      group_idx = groups.each_with_index.to_h
+      starting_values, reducers = futures.each_with_index.map do |f,i|
+        value_column = groups.size + i
+        group_columns = f.relation.group_values.map {|k| group_idx[k] }
+        case group_columns.size
+        when 0 then [0,->(memo,row){ memo+row[value_column] }]
+        when 1 then [Hash.new(0),->(memo,row){ memo[row[group_columns[0]]] += row[value_column]; memo }]
+        else [Hash.new(0),->(memo,row){ memo[group_columns.map {|i| row[i] }] += row[value_column]; memo }]
+        end
+      end.transpose
+      cols = (0...reducers.size)
+      base_group_columns = (0...base_groups.size)
+      aggregated = data.
+        group_by {|row| row[base_group_columns] }.
+        # tap {|d| puts d.inspect }. # The rows 
+        transform_values! do |rows|
+          values = starting_values.map &:dup # Some are hashes, so need to start fresh with them
+          rows.each do |row|
+            cols.each do |i|
+              values[i] = reducers[i].call(values[i],row)
+            end
+          end
+          values
+        end.then do |report|
+          case base_group_columns.size
+          when 0 then report.values.first
+          when 1 then report.transform_keys! {|k| k.first }
+          else report
+          end
+        end
+
+
+
       # TODO support hash returns
       # TODO support single value returns
       # TODO don't assume the whole return is FutureResults
-      # TODO collect things to query (try just using the block_value first, allowing arrays and hashes)
-      # TODO do query
       # TODO assign results
     end
   end
@@ -140,11 +176,6 @@ module ActiveRecord::Summarize
       @value
     end
 
-    def arel
-      # TODO: remove me; only for development
-      @relation.arel
-    end
-
     def method_missing(method, *args, &block)
       raise NoMethodError.new(method)
     end
@@ -153,10 +184,6 @@ module ActiveRecord::Summarize
     def _tap(&block)
       value.tap &block
       self
-    end
-
-    def relation
-      @relation
     end
   end
 
