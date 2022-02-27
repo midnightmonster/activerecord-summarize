@@ -75,11 +75,11 @@ module ActiveRecord::Summarize
 
     def count(column_name=:id)
       column_name = :id if ['*',:all].include? column_name
-      @summarize.add_future(@relation,:count,aggregate_column_sql(column_name))
+      @summarize.add_future(@relation,:count,aggregate_column(column_name))
     end
 
     def sum(column_name=nil)
-      @summarize.add_future(@relation,:sum,aggregate_column_sql(column_name))
+      @summarize.add_future(@relation,:sum,aggregate_column(column_name))
     end
 
     def where(*args); self.class.new(@summarize, @relation.where(*args)); end
@@ -116,11 +116,8 @@ module ActiveRecord::Summarize
     end
 
     private
-    def aggregate_column_sql(name)
-      column = @relation.send(:aggregate_column,name)
-      return column if column.is_a?(String)
-      relation = column.relation
-      "#{@relation.connection.quote_table_name(relation.table_alias.presence || relation.name)}.#{@relation.connection.quote_column_name(column.name)}"
+    def aggregate_column(name)
+      @relation.send(:aggregate_column,name)
     end
   end
 
@@ -164,14 +161,14 @@ module ActiveRecord::Summarize
   end
 
   class AggregateResult < FutureResult
-    attr_reader :relation, :method, :column_sql
+    attr_reader :relation, :method, :column
 
-    def initialize(summarize,relation,method,column_sql)
+    def initialize(summarize,relation,method,column)
       super()
       @summarize = summarize
       @relation = relation
       @method = method
-      @column_sql = column_sql
+      @column = column
     end
 
     def resolve(value)
@@ -181,17 +178,23 @@ module ActiveRecord::Summarize
 
     def select_value(base_relation)
       where = relation.where_clause - base_relation.where_clause
-      column = column_sql
-      column = "CASE (#{where.ast.to_sql}) WHEN true THEN #{column} ELSE #{unmatch_sql} END" unless where.empty?
-      column = "DISTINCT #{column}" if relation.distinct_value
-      Arel.sql("#{method.to_s.upcase}(#{column})")
+      for_select = column
+      for_select = Arel::Nodes::Case.new(where.ast,unmatch_value).when(true,for_select) unless where.empty?
+      function.new([for_select]).tap {|f| f.distinct = relation.distinct_value }
     end
-        
-
-    def unmatch_sql
+    
+    def unmatch_value
       case method
-      when :sum then '0'
-      when :count then 'null'
+      when :sum then 0
+      when :count then nil
+      else raise "Unknown aggregate method"
+      end
+    end
+
+    def function
+      case method
+      when :sum then Arel::Nodes::Sum
+      when :count then Arel::Nodes::Count
       else raise "Unknown aggregate method"
       end
     end
