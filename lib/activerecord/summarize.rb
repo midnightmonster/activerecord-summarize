@@ -1,40 +1,81 @@
 # frozen_string_literal: true
 
 require_relative "summarize/version"
+require_relative "../chainable_result"
 
 module ActiveRecord::Summarize
   class Error < StandardError; end
   class Unproxyable < StandardError; end
   class TimeTravel < StandardError; end
 
+  CheatResult = Struct.new(:value, :cheat, :bound_self) do
+    def then_instance_variables
+      to_set = yield(cheat.instance_variables.each_with_object({}) do |k,obj|
+        obj[k] = cheat.instance_variable_get(k)
+      end)
+      to_set.each do |k,v|
+        bound_self.instance_variable_set(k,v)
+      end
+    end
+  end
+
+  class BindingCheat
+    def initialize(bound_self)
+      @__bound_self = bound_self
+    end
+
+    def self.invoke_block(*args,&block)
+      bound_self = block.binding.receiver
+      cheat = self.new(bound_self)
+      bound_self.instance_variables.each do |k|
+        cheat.instance_variable_set(k,bound_self.instance_variable_get(k))
+      end
+      CheatResult.new(cheat.instance_exec(*args,&block), cheat, bound_self)
+    end
+
+    def method_missing(method, *args, **opts, &block)
+      @__bound_self.send(method, *args, **opts, &block)
+    end
+  end
+
+  class WithBindingCheat < BindingCheat
+    def with(*results,&block)
+      return ChainableResult.wrap(results.first,:then,&block) if 1 == results.size
+      ChainableResult.wrap(results,:then,&block)
+    end
+  end
+
   class Summarize
+    attr_reader :current_result_row
+
     def initialize(relation)
       @relation = relation
-      @futures = Set.new
-      @queue = []
+      @aggregations = []
     end
 
     def process(&block)
       ungrouped_for_clear_group_resolution = @relation.unscope(:group)
-      block_result = yield SummarizingProxy.new(self, ungrouped_for_clear_group_resolution)
-      resolve(block_result, block.binding)
+      bound_future = WithBindingCheat.invoke_block(SummarizingProxy.new(self, ungrouped_for_clear_group_resolution), &block)
+      future_block_result = ChainableResult.wrap(bound_future.value,:itself)
+      result = resolve.transform_values! do |row|
+        @current_result_row = row
+        future_block_result.value
+      end.then do |result|
+        case @relation.group_values.size
+        when 0 then result.values.first
+        when 1 then result.transform_keys! {|k| k.first }
+        else result
+        end
+      end
+      bound_future.then_instance_variables {|vars| ChainableResult.wrap(vars,:itself).value }
+      result
     end
 
-    def add_future(relation,method,column_sql)
-      future = AggregateResult.new(self,relation,method,column_sql)
-      @futures << future
-      future
-    end
-
-    def enqueue(future,method,block)
-      case method
-      when :tap
-        @queue << [future,:_tap,block]
-        future
-      when :then
-        @queue << [tr = ThenResult.new(future),:resolve,block]
-        tr
-      else raise Error.new("Don't know how to enqueue #{method.inspect}")
+    def add_aggregation(aggregation)
+      index = @aggregations.size
+      @aggregations << aggregation
+      ChainableResult.wrap(aggregation,:then) do |_|
+        current_result_row[index]
       end
     end
 
@@ -42,25 +83,25 @@ module ActiveRecord::Summarize
     BASE_QUERY_PARTS = [:where, :limit, :offset, :joins, :left_outer_joins, :from, :order, :optimizer_hints]
     AGGREGATE_FROM_WHERE_PARTS = [:where, :joins, :left_outer_joins, :from, :order]
 
-    def resolve(block_value,block_context)
-      futures = @futures.to_a
+    def resolve
+      aggregations = @aggregations.to_a
       
       # Build & execute query
       base_from_where = @relation.only(*BASE_QUERY_PARTS)
       # puts base_from_where.to_sql
-      full_from_where = futures.
+      full_from_where = aggregations.
         map {|f| f.relation.only(*AGGREGATE_FROM_WHERE_PARTS) }.
         inject(base_from_where) {|f, memo| memo.or(f) }
       base_groups = @relation.group_values
-      groups = futures.inject(Set.new(base_groups)) {|g,f| g.merge(f.relation.group_values) }.to_a
+      groups = aggregations.inject(Set.new(base_groups)) {|g,f| g.merge(f.relation.group_values) }.to_a
       grouped_query = groups.any? ? full_from_where.group(*groups) : full_from_where
-      value_selects = futures.map {|f| f.select_value(@relation) }
+      value_selects = aggregations.map {|f| f.select_value(@relation) }
       data = grouped_query.pluck(*groups,*value_selects)
       # puts [groups, data].inspect # debug
       
       # Aggregate & assign results
       group_idx = groups.each_with_index.to_h
-      starting_values, reducers = futures.each_with_index.map do |f,i|
+      starting_values, reducers = aggregations.each_with_index.map do |f,i|
         value_column = groups.size + i
         group_columns = f.relation.group_values.map {|k| group_idx[k] }
         case group_columns.size
@@ -82,20 +123,8 @@ module ActiveRecord::Summarize
             end
           end
           values
-        end.then do |report|
-          case base_group_columns.size
-          when 0 then report.values.first
-          when 1 then report.transform_keys! {|k| k.first }
-          else report
-          end
         end
-
-
-
-      # TODO support hash returns
-      # TODO support single value returns
-      # TODO don't assume the whole return is FutureResults
-      # TODO assign results
+      aggregated
     end
   end
 
@@ -111,11 +140,11 @@ module ActiveRecord::Summarize
 
     def count(column_name=:id)
       column_name = :id if ['*',:all].include? column_name
-      @summarize.add_future(@relation,:count,aggregate_column(column_name))
+      @summarize.add_aggregation(AggregateResult.new(@relation,:count,aggregate_column(column_name)))
     end
 
     def sum(column_name=nil)
-      @summarize.add_future(@relation,:sum,aggregate_column(column_name))
+      @summarize.add_aggregation(AggregateResult.new(@relation,:sum,aggregate_column(column_name)))
     end
 
     def where(*args); self.class.new(@summarize, @relation.where(*args)); end
@@ -157,50 +186,13 @@ module ActiveRecord::Summarize
     end
   end
 
-  class FutureResult
-    def initialize
-      @value = nil
-      @resolved = false
-    end
-
-    def tap(&block)
-      @summarize.enqueue self, :tap, block
-    end
-
-    def then(&block)
-      @summarize.enqueue self, :then, block
-    end
-
-    def value
-      raise TimeTravel.new("#{this.class.name} not resolved yet") unless @resolved
-      @value
-    end
-
-    def method_missing(method, *args, &block)
-      raise NoMethodError.new(method)
-    end
-
-    protected
-    def _tap(&block)
-      value.tap &block
-      self
-    end
-  end
-
-  class AggregateResult < FutureResult
+  class AggregateResult
     attr_reader :relation, :method, :column
 
-    def initialize(summarize,relation,method,column)
-      super()
-      @summarize = summarize
+    def initialize(relation,method,column)
       @relation = relation
       @method = method
       @column = column
-    end
-
-    def resolve(value)
-      @resolved = true
-      @value = value
     end
 
     def select_value(base_relation)
@@ -226,20 +218,6 @@ module ActiveRecord::Summarize
       end
     end
   end
-
-  class ThenResult < FutureResult
-    def initialize(parent, &block)
-      super
-      @parent = parent
-      @block = block
-    end
-
-    def resolve!
-      @resolved = true
-      @value = @parent.value.then &@block
-    end
-  end
-
 
 end
 
