@@ -6,77 +6,88 @@ require_relative "../chainable_result"
 module ActiveRecord::Summarize
   class Error < StandardError; end
   class Unproxyable < StandardError; end
-  class TimeTravel < StandardError; end
-
-  CheatResult = Struct.new(:value, :cheat, :bound_self) do
-    def then_instance_variables
-      to_set = yield(cheat.instance_variables.each_with_object({}) do |k,obj|
-        obj[k] = cheat.instance_variable_get(k)
-      end)
-      to_set.each do |k,v|
-        bound_self.instance_variable_set(k,v)
-      end
-    end
-  end
-
-  class BindingCheat
-    def initialize(bound_self)
-      @__bound_self = bound_self
-    end
-
-    def self.invoke_block(*args,&block)
-      bound_self = block.binding.receiver
-      cheat = self.new(bound_self)
-      bound_self.instance_variables.each do |k|
-        cheat.instance_variable_set(k,bound_self.instance_variable_get(k))
-      end
-      CheatResult.new(cheat.instance_exec(*args,&block), cheat, bound_self)
-    end
-
-    def method_missing(method, *args, **opts, &block)
-      @__bound_self.send(method, *args, **opts, &block)
-    end
-  end
-
-  class WithBindingCheat < BindingCheat
-    def with(*results,&block)
-      return ChainableResult.wrap(results.first,:then,&block) if 1 == results.size
-      ChainableResult.wrap(results,:then,&block)
-    end
-  end
 
   class Summarize
-    attr_reader :current_result_row
+    attr_reader :current_result_row, :pure, :noop
+    alias_method :pure?, :pure
+    alias_method :noop?, :noop
 
-    def initialize(relation)
+    def initialize(relation, pure: nil, noop: false)
       @relation = relation
+      @noop = noop
+      has_base_groups = relation.group_values.any?
+      raise Error.new("`summarize` must be pure when called on a grouped relation") if pure == false && has_base_groups
+      @pure = has_base_groups || !!pure
       @aggregations = []
     end
 
     def process(&block)
-      ungrouped_for_clear_group_resolution = @relation.unscope(:group)
-      bound_future = WithBindingCheat.invoke_block(SummarizingProxy.new(self, ungrouped_for_clear_group_resolution), &block)
-      future_block_result = ChainableResult.wrap(bound_future.value,:itself)
-      result = resolve.transform_values! do |row|
-        @current_result_row = row
-        future_block_result.value
-      end.then do |result|
-        case @relation.group_values.size
-        when 0 then result.values.first
-        when 1 then result.transform_keys! {|k| k.first }
-        else result
+      # noop: true is meant as a convenient way to test/prove the correctness of
+      # `summarize` and to compare performance of `summarize` vs not using it.
+      # For noop, just yield the relation and a transparent `with` proc.
+      return yield(@relation, SummarizingProxy.noop_with) if noop?
+      # The proxy collects all calls to `count` and `sum`, registering them with
+      # this object and returning a ChainableResult via summarize.add_aggregation.
+      proxy = SummarizingProxy.new(self, @relation.unscope(:group))
+      future_block_result = ChainableResult.wrap(yield(proxy,ChainableResult::WITH))
+      ChainableResult.with_cache(!pure?) do
+        # `resolve` builds the single query that answers all collected aggregations,
+        # executes it, and aggregates the results by the values of
+        # `@relation.group_values``. In the common case of no `@relation.group_values`,
+        # the result is just `{[]=>[*final_value_for_each_aggregation]}`
+        result = resolve().transform_values! do |row|
+          # Each row (in the common case, only one) is used to resolve any
+          # ChainableResults returned by the block. These may be a one-to-one mapping,
+          # or the block return may have combined some results via `with` or chained
+          # additional methods on results, etc..
+          @current_result_row = row
+          future_block_result.value
+        end.then do |result|
+          # Change ungrouped result from `{[]=>v}` to `v` and grouped-by-one-column
+          # result from `{[k1]=>v1,[k2]=>v2,...}` to `{k1=>v1,k2=>v2,...}`.
+          # (Those are both probably more common than multiple-column base grouping.)
+          case @relation.group_values.size
+          when 0 then result.values.first
+          when 1 then result.transform_keys! {|k| k.first }
+          else result
+          end
         end
+        if !pure?
+          # Check block scope's local vars and block's self's instance vars for
+          # any ChainableResult, and replace it with its resolved value.
+          #
+          # Also check the values of any of those vars that are Hashes, since IME
+          # it's not rare to assign counts to hashes, and it is rare to have giant
+          # hashes that would be particularly wasteful to traverse. Do not do the
+          # same for Arrays, since IME pushing counts to arrays is rare, and large
+          # arrays, e.g., of many eagerly-fetched ActiveRecord objects, are not
+          # rare in controllers.
+          #
+          # Preconditions:
+          # - @current_result_row is still set to the single result row
+          # - we are within a ChainableResult.with_cache(true) block
+          block_binding = block.binding
+          block_self = block_binding.receiver
+          block_binding.local_variables.each do |k|
+            v = block_binding.local_variable_get(k)
+            next block_binding.local_variable_set(k, v.value) if v.is_a?(ChainableResult)
+            lightly_touch_impure_hash(v) if v.is_a?(Hash)
+          end
+          block_self.instance_variables.each do |k|
+            v = block_self.instance_variable_get(k)
+            next block_self.instance_variable_set(k, v.value) if v.is_a?(ChainableResult)
+            lightly_touch_impure_hash(v) if v.is_a?(Hash)
+          end
+        end
+        @current_result_row = nil
+        result
       end
-      bound_future.then_instance_variables {|vars| ChainableResult.wrap(vars,:itself).value }
-      result
     end
 
     def add_aggregation(aggregation)
       index = @aggregations.size
       @aggregations << aggregation
-      ChainableResult.wrap(aggregation,:then) do |_|
-        current_result_row[index]
-      end
+      ChainableResult.wrap(aggregation) { current_result_row[index] }
     end
 
     # :where, :joins, and :left_outer_joins are the only use cases I've seen IRL
@@ -84,24 +95,21 @@ module ActiveRecord::Summarize
     AGGREGATE_FROM_WHERE_PARTS = [:where, :joins, :left_outer_joins, :from, :order]
 
     def resolve
-      aggregations = @aggregations.to_a
-      
       # Build & execute query
       base_from_where = @relation.only(*BASE_QUERY_PARTS)
-      # puts base_from_where.to_sql
-      full_from_where = aggregations.
+      full_from_where = @aggregations.
         map {|f| f.relation.only(*AGGREGATE_FROM_WHERE_PARTS) }.
         inject(base_from_where) {|f, memo| memo.or(f) }
       base_groups = @relation.group_values
-      groups = aggregations.inject(Set.new(base_groups)) {|g,f| g.merge(f.relation.group_values) }.to_a
+      groups = @aggregations.inject(Set.new(base_groups)) {|g,f| g.merge(f.relation.group_values) }.to_a
       grouped_query = groups.any? ? full_from_where.group(*groups) : full_from_where
-      value_selects = aggregations.map {|f| f.select_value(@relation) }
+      value_selects = @aggregations.map {|f| f.select_value(@relation) }
       data = grouped_query.pluck(*groups,*value_selects)
       # puts [groups, data].inspect # debug
       
       # Aggregate & assign results
       group_idx = groups.each_with_index.to_h
-      starting_values, reducers = aggregations.each_with_index.map do |f,i|
+      starting_values, reducers = @aggregations.each_with_index.map do |f,i|
         value_column = groups.size + i
         group_columns = f.relation.group_values.map {|k| group_idx[k] }
         case group_columns.size
@@ -109,10 +117,10 @@ module ActiveRecord::Summarize
         when 1 then [Hash.new(0),->(memo,row){ memo[row[group_columns[0]]] += row[value_column]; memo }]
         else [Hash.new(0),->(memo,row){ memo[group_columns.map {|i| row[i] }] += row[value_column]; memo }]
         end
-      end.transpose
+      end.transpose # For an array of pairs, `transpose` is the reverse of `zip`
       cols = (0...reducers.size)
       base_group_columns = (0...base_groups.size)
-      aggregated = data.
+      data.
         group_by {|row| row[base_group_columns] }.
         # tap {|d| puts d.inspect }. # The rows 
         transform_values! do |rows|
@@ -124,7 +132,13 @@ module ActiveRecord::Summarize
           end
           values
         end
-      aggregated
+    end
+
+    private
+    def lightly_touch_impure_hash(h)
+      h.each do |k,v|
+        h[k] = v.value if v.is_a? ChainableResult
+      end
     end
   end
 
@@ -136,6 +150,10 @@ module ActiveRecord::Summarize
 
     def summarize
       raise Unproxyable.new("Cannot summarize within a summarize block")
+    end
+
+    def self.noop_with
+      ->(*results,&block){ [*results].then(&block) }
     end
 
     def count(column_name=:id)
@@ -223,9 +241,8 @@ end
 
 class ActiveRecord::Base
   class << self
-    def summarize(noop: false, &block)
-      return yield self.all if noop
-      ActiveRecord::Summarize::Summarize.new(self.all).process(&block)
+    def summarize(**opts, &block)
+      ActiveRecord::Summarize::Summarize.new(self.all,**opts).process(&block)
     end
   end
 end
@@ -233,9 +250,8 @@ end
 
 class ActiveRecord::Relation
   class << self
-    def summarize(noop: false, &block)
-      return yield self if noop
-      ActiveRecord::Summarize::Summarize.new(self).process(&block)
+    def summarize(**opts, &block)
+      ActiveRecord::Summarize::Summarize.new(self,**opts).process(&block)
     end
   end
 end
