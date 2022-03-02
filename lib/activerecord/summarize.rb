@@ -114,14 +114,15 @@ module ActiveRecord::Summarize
         group_columns = f.relation.group_values.map {|k| group_idx[k] }
         case group_columns.size
         when 0 then [0,->(memo,row){ memo+row[value_column] }]
-        when 1 then [Hash.new(0),->(memo,row){ memo[row[group_columns[0]]] += row[value_column]; memo }]
-        else [Hash.new(0),->(memo,row){ memo[group_columns.map {|i| row[i] }] += row[value_column]; memo }]
+        when 1 then [Hash.new(0),->(memo,row){ memo[row[group_columns[0]]] += row[value_column] unless row[value_column].zero?; memo }]
+        else [Hash.new(0),->(memo,row){ memo[group_columns.map {|i| row[i] }] += row[value_column] unless row[value_column].zero?; memo }]
         end
       end.transpose # For an array of pairs, `transpose` is the reverse of `zip`
       cols = (0...reducers.size)
       base_group_columns = (0...base_groups.size)
       data.
         group_by {|row| row[base_group_columns] }.
+        tap {|h| h[[]] = [] if h.empty? && base_groups.size.zero? }.
         # tap {|d| puts d.inspect }. # The rows 
         transform_values! do |rows|
           values = starting_values.map &:dup # Some are hashes, so need to start fresh with them
