@@ -1,7 +1,7 @@
 class ChainableResult
-  def initialize(source,method,args=[],opts={},block=nil)
+  def initialize(source,method=nil,args=[],opts={},&block)
     @source = source
-    @method = method
+    @method = method || (block ? :then : :itself)
     @args = args
     @opts = opts
     @block = block
@@ -19,12 +19,12 @@ class ChainableResult
   end
 
   def to_json(**opts); ChainableResult::Future.new(self,:to_json,[],opts); end
-  def then(&block); ChainableResult::Future.new(self,:then,[],{},block); end
-  def yield_self(&block); ChainableResult::Future.new(self,:yield_self,[],{},block); end
-  def tap(&block); ChainableResult::Future.new(self,:tap,[],{},block); end
+  def then(&block); ChainableResult::Future.new(self,:then,&block); end
+  def yield_self(&block); ChainableResult::Future.new(self,:yield_self,&block); end
+  def tap(&block); ChainableResult::Future.new(self,:tap,&block); end
 
   def method_missing(method,*args,**opts,&block)
-    ChainableResult::Future.new(self,method,args,opts,block)
+    ChainableResult::Future.new(self,method,args,opts,&block)
   end
 
   class Future < self
@@ -59,7 +59,7 @@ class ChainableResult
     when ::Hash then ChainableResult::Hash
     else ChainableResult::Other
     end
-    klass.new(v,method,args,opts,block)
+    klass.new(v,method,args,opts,&block)
   end
 
   def self.with(*results,&block)
