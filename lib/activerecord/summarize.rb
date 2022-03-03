@@ -5,7 +5,7 @@ require_relative "../chainable_result"
 
 module ActiveRecord::Summarize
   class Error < StandardError; end
-  class Unproxyable < StandardError; end
+  class Unsummarizable < StandardError; end
 
   class Summarize
     attr_reader :current_result_row, :pure, :noop
@@ -25,11 +25,11 @@ module ActiveRecord::Summarize
       # noop: true is meant as a convenient way to test/prove the correctness of
       # `summarize` and to compare performance of `summarize` vs not using it.
       # For noop, just yield the relation and a transparent `with` proc.
-      return yield(@relation, SummarizingProxy.noop_with) if noop?
+      return yield(@relation, ->(*results,&block){ [*results].then(&block) }) if noop?
       # The proxy collects all calls to `count` and `sum`, registering them with
       # this object and returning a ChainableResult via summarize.add_aggregation.
-      proxy = SummarizingProxy.new(self, @relation.unscope(:group))
-      future_block_result = ChainableResult.wrap(yield(proxy,ChainableResult::WITH))
+      summarizing = @relation.unscope(:group).tap {|r| r.instance_variable_set(:@summarize,self) }
+      future_block_result = ChainableResult.wrap(yield(summarizing,ChainableResult::WITH))
       ChainableResult.with_cache(!pure?) do
         # `resolve` builds the single query that answers all collected aggregations,
         # executes it, and aggregates the results by the values of
@@ -100,15 +100,23 @@ module ActiveRecord::Summarize
       full_from_where = @aggregations.
         map {|f| f.relation.only(*AGGREGATE_FROM_WHERE_PARTS) }.
         inject(base_from_where) {|f, memo| memo.or(f) }
+      # keep all base groups, even if they did something stupid like group by
+      # the same key twice, but otherwise don't repeat any groups
       base_groups = @relation.group_values
-      groups = @aggregations.inject(Set.new(base_groups)) {|g,f| g.merge(f.relation.group_values) }.to_a
+      groups = base_groups.dup
+      groups_set = Set.new(groups)
+      @aggregations.map {|f| f.relation.group_values }.flatten.each do |k|
+        next if groups_set.include? k
+        groups_set << k
+        groups << k
+      end
+      group_idx = groups.each_with_index.to_h
       grouped_query = groups.any? ? full_from_where.group(*groups) : full_from_where
       value_selects = @aggregations.map {|f| f.select_value(@relation) }
       data = grouped_query.pluck(*groups,*value_selects)
       # puts [groups, data].inspect # debug
       
       # Aggregate & assign results
-      group_idx = groups.each_with_index.to_h
       starting_values, reducers = @aggregations.each_with_index.map do |f,i|
         value_column = groups.size + i
         group_columns = f.relation.group_values.map {|k| group_idx[k] }
@@ -140,68 +148,6 @@ module ActiveRecord::Summarize
       h.each do |k,v|
         h[k] = v.value if v.is_a? ChainableResult
       end
-    end
-  end
-
-  class SummarizingProxy < ActiveRecord::Relation
-    def initialize(summarize,relation)
-      @summarize = summarize
-      @relation = relation
-    end
-
-    def summarize
-      raise Unproxyable.new("Cannot summarize within a summarize block")
-    end
-
-    def self.noop_with
-      ->(*results,&block){ [*results].then(&block) }
-    end
-
-    def count(column_name=:id)
-      column_name = :id if ['*',:all].include? column_name
-      @summarize.add_aggregation(AggregateResult.new(@relation,:count,aggregate_column(column_name)))
-    end
-
-    def sum(column_name=nil)
-      @summarize.add_aggregation(AggregateResult.new(@relation,:sum,aggregate_column(column_name)))
-    end
-
-    def where(*args); self.class.new(@summarize, @relation.where(*args)); end
-    def not(*args); self.class.new(@summarize, @relation.not(*args)); end
-    def missing(*args); self.class.new(@summarize, @relation.missing(*args)); end
-    def group(*args); self.class.new(@summarize, @relation.group(*args)); end
-    def distinct(*args); self.class.new(@summarize, @relation.distinct(*args)); end
-
-    # TODO: Figure out how to overcome, detect, and/or warn about joins changing counts
-    def joins(*args); self.class.new(@summarize, @relation.joins(*args)); end
-    def left_outer_joins(*args); self.class.new(@summarize, @relation.left_joins(*args)); end
-    alias :left_joins :left_outer_joins
-
-    def includes(*args); raise Unproxyable.new("`includes` is not meaningful inside `summarize` block"); end
-    def eager_load(*args); raise Unproxyable.new("`eager_load` is not meaningful inside `summarize` block"); end
-    def preload(*args); raise Unproxyable.new("`preload` is not meaningful inside `summarize` block"); end
-    def extract_associated(*args); raise Unproxyable.new("`extract_associated` is not meaningful inside `summarize` block"); end
-    def references(*args); raise Unproxyable.new("`references` is not meaningful inside `summarize` block"); end
-    def select(*args); raise Unproxyable.new("`select` is not meaningful inside `summarize` block"); end
-    def reselect(*args); raise Unproxyable.new("`reselect` is not meaningful inside `summarize` block"); end
-    def order(*args); raise Unproxyable.new("`order` is not meaningful inside `summarize` block"); end
-    def reorder(*args); raise Unproxyable.new("`reorder` is not meaningful inside `summarize` block"); end
-    def limit(*args); raise Unproxyable.new("`limit` is not meaningful inside `summarize` block"); end
-    def offset(*args); raise Unproxyable.new("`offset` is not meaningful inside `summarize` block"); end
-    def readonly(*args); raise Unproxyable.new("`readonly` is not meaningful inside `summarize` block"); end
-    def strict_loading(*args); raise Unproxyable.new("`strict_loading` is not meaningful inside `summarize` block"); end
-    def create_with(*args); raise Unproxyable.new("`create_with` is not meaningful inside `summarize` block"); end
-    def reverse_order(*args); raise Unproxyable.new("`reverse_order` is not meaningful inside `summarize` block"); end
-
-    def method_missing(method, *args, **opts, &block)
-      next_relation = @relation.send(method, *args, **opts, &block)
-      raise Unproxyable.new("Inside `summarize` block, result of `#{method}` must be an ActiveRecord::Relation") unless next_relation.is_a? ActiveRecord::Relation
-      self.class.new(@summarize,next_relation)
-    end
-
-    private
-    def aggregate_column(name)
-      @relation.send(:aggregate_column,name)
     end
   end
 
@@ -238,6 +184,24 @@ module ActiveRecord::Summarize
     end
   end
 
+  module Methods
+    def summarize(**opts, &block)
+      raise Unsummarizable.new("Cannot summarize within a summarize block") if @summarize
+      ActiveRecord::Summarize::Summarize.new(self,**opts).process(&block)
+    end
+
+    def count(column_name=:id)
+      return super unless @summarize
+      column_name = :id if ['*',:all].include? column_name
+      @summarize.add_aggregation(AggregateResult.new(self,:count,aggregate_column(column_name)))
+    end
+
+    def sum(column_name=nil)
+      return super unless @summarize
+      @summarize.add_aggregation(AggregateResult.new(self,:sum,aggregate_column(column_name)))
+    end
+  end
+
 end
 
 class ActiveRecord::Base
@@ -250,9 +214,5 @@ end
 
 
 class ActiveRecord::Relation
-  class << self
-    def summarize(**opts, &block)
-      ActiveRecord::Summarize::Summarize.new(self,**opts).process(&block)
-    end
-  end
+  include ActiveRecord::Summarize::Methods
 end
