@@ -8,7 +8,7 @@ module ActiveRecord::Summarize
   class Unsummarizable < StandardError; end
 
   class Summarize
-    attr_reader :current_result_row, :pure, :noop
+    attr_reader :current_result_row, :pure, :noop, :from_where
     alias_method :pure?, :pure
     alias_method :noop?, :noop
 
@@ -92,7 +92,9 @@ module ActiveRecord::Summarize
       end
     end
 
-    def add_calculation(calculation)
+    def add_calculation(relation,operation,column_name)
+      merge_from_where!(relation)
+      calculation = CalculationResult.new(relation, operation, column_name)
       index = @calculations.size
       @calculations << calculation
       ChainableResult.wrap(calculation) { current_result_row[index] }
@@ -132,26 +134,28 @@ module ActiveRecord::Summarize
         end
     end
 
-    def to_sql
-      groups = all_groups
-      value_selects = @calculations.map {|f| f.select_value(@relation) }
-      grouped_query = groups.any? ? from_where.group(*groups) : from_where
-      grouped_query.reselect(*groups,*value_selects).to_sql
-    end
-
     private
 
-    def from_where
-      # Logical OR the criteria of all calculations. Most often this is equivalent to 
-      # `@relation.except(:select,:group)`, since usually one is a total or grouped count
-      # without additional `where` criteria, but that needn't necessarily be so. Also,
-      # we want ActiveRecord's structurally_incompatible_values_for check lest one
-      # calculation's `join` or `left_outer_join` make the others' values wrong.
-      calculations_from_where = @calculations.
-        map {|f| f.relation.except(:select,:group) }.
-        inject {|f, memo| memo.or(f) }
+    def compatible_base
+      @compatible_base ||= @relation.except(:select,:group)
     end
 
+    def merge_from_where!(other)
+      other_from_where = other.except(:select,:group)
+      incompatible_values = compatible_base.send(:structurally_incompatible_values_for,other_from_where)
+      unless incompatible_values.empty?
+        raise ArgumentError, "Within a `summarize` block, each calculation must be structurally compatible. Incompatible values: #{incompatible_values}"
+      end
+      # Logical OR the criteria of all calculations. Most often this is equivalent 
+      # to `compatible_base`, since usually one is a total or grouped count without
+      # additional `where` criteria, but that needn't necessarily be so.
+      if @from_where.nil?
+        @from_where = other_from_where
+      else
+        @from_where = @from_where.or(other_from_where)
+      end
+    end
+    
     def base_groups
       @relation.group_values.dup
     end
@@ -221,16 +225,12 @@ module ActiveRecord::Summarize
   end
 
   module InstanceMethods
-    def to_sql
-      @summarize.to_sql
-    end
-
     private
     def perform_calculation(operation, column_name)
       case operation = operation.to_s.downcase
       when "count", "sum"
         column_name = :id if [nil,"*",:all].include? column_name
-        @summarize.add_calculation(CalculationResult.new(self,operation,aggregate_column(column_name)))
+        @summarize.add_calculation(self,operation,aggregate_column(column_name))
       else super
       end
     end
