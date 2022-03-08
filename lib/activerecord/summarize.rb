@@ -12,29 +12,37 @@ module ActiveRecord::Summarize
     alias_method :pure?, :pure
     alias_method :noop?, :noop
 
+    # noop: true is meant as a convenient way to test/prove the correctness of
+    # `summarize` and to compare performance of `summarize` vs not using it.
     def initialize(relation, pure: nil, noop: false)
       @relation = relation
       @noop = noop
       has_base_groups = relation.group_values.any?
       raise Error.new("`summarize` must be pure when called on a grouped relation") if pure == false && has_base_groups
       @pure = has_base_groups || !!pure
-      @aggregations = []
+      @calculations = []
     end
 
     def process(&block)
-      # noop: true is meant as a convenient way to test/prove the correctness of
-      # `summarize` and to compare performance of `summarize` vs not using it.
-      # For noop, just yield the relation and a transparent `with` proc.
+      # For noop, just yield the original relation and a transparent `with` proc.
       return yield(@relation, ->(*results,&block){ [*results].then(&block) }) if noop?
-      # The proxy collects all calls to `count` and `sum`, registering them with
-      # this object and returning a ChainableResult via summarize.add_aggregation.
-      summarizing = @relation.unscope(:group).tap {|r| r.instance_variable_set(:@summarize,self) }
-      future_block_result = ChainableResult.wrap(yield(summarizing,ChainableResult::WITH))
+      # Within the block, the relation and its future clones intercept calls to 
+      # `count` and `sum`, registering them and returning a ChainableResult via
+      # summarize.add_calculation.
+      future_block_result = ChainableResult.wrap(yield(
+        @relation.unscope(:group).tap do |r|
+          r.instance_variable_set(:@summarize,self)
+          class << r
+            include InstanceMethods
+          end
+        end,
+        ChainableResult::WITH
+      ))
       ChainableResult.with_cache(!pure?) do
-        # `resolve` builds the single query that answers all collected aggregations,
+        # `resolve` builds the single query that answers all collected calculations,
         # executes it, and aggregates the results by the values of
         # `@relation.group_values``. In the common case of no `@relation.group_values`,
-        # the result is just `{[]=>[*final_value_for_each_aggregation]}`
+        # the result is just `{[]=>[*final_value_for_each_calculation]}`
         result = resolve().transform_values! do |row|
           # Each row (in the common case, only one) is used to resolve any
           # ChainableResults returned by the block. These may be a one-to-one mapping,
@@ -84,40 +92,21 @@ module ActiveRecord::Summarize
       end
     end
 
-    def add_aggregation(aggregation)
-      index = @aggregations.size
-      @aggregations << aggregation
-      ChainableResult.wrap(aggregation) { current_result_row[index] }
+    def add_calculation(calculation)
+      index = @calculations.size
+      @calculations << calculation
+      ChainableResult.wrap(calculation) { current_result_row[index] }
     end
-
-    # :where, :joins, and :left_outer_joins are the only use cases I've seen IRL
-    BASE_QUERY_PARTS = [:where, :limit, :offset, :joins, :left_outer_joins, :from, :order, :optimizer_hints]
-    AGGREGATE_FROM_WHERE_PARTS = [:where, :joins, :left_outer_joins, :from, :order]
 
     def resolve
       # Build & execute query
-      base_from_where = @relation.only(*BASE_QUERY_PARTS)
-      full_from_where = @aggregations.
-        map {|f| f.relation.only(*AGGREGATE_FROM_WHERE_PARTS) }.
-        inject(base_from_where) {|f, memo| memo.or(f) }
-      # keep all base groups, even if they did something stupid like group by
-      # the same key twice, but otherwise don't repeat any groups
-      base_groups = @relation.group_values
-      groups = base_groups.dup
-      groups_set = Set.new(groups)
-      @aggregations.map {|f| f.relation.group_values }.flatten.each do |k|
-        next if groups_set.include? k
-        groups_set << k
-        groups << k
-      end
-      group_idx = groups.each_with_index.to_h
-      grouped_query = groups.any? ? full_from_where.group(*groups) : full_from_where
-      value_selects = @aggregations.map {|f| f.select_value(@relation) }
+      groups = all_groups
+      grouped_query = groups.any? ? from_where.group(*groups) : from_where
       data = grouped_query.pluck(*groups,*value_selects)
-      # puts [groups, data].inspect # debug
       
       # Aggregate & assign results
-      starting_values, reducers = @aggregations.each_with_index.map do |f,i|
+      group_idx = groups.each_with_index.to_h
+      starting_values, reducers = @calculations.each_with_index.map do |f,i|
         value_column = groups.size + i
         group_columns = f.relation.group_values.map {|k| group_idx[k] }
         case group_columns.size
@@ -143,7 +132,47 @@ module ActiveRecord::Summarize
         end
     end
 
+    def to_sql
+      groups = all_groups
+      value_selects = @calculations.map {|f| f.select_value(@relation) }
+      grouped_query = groups.any? ? from_where.group(*groups) : from_where
+      grouped_query.reselect(*groups,*value_selects).to_sql
+    end
+
     private
+
+    def from_where
+      # Logical OR the criteria of all calculations. Most often this is equivalent to 
+      # `@relation.except(:select,:group)`, since usually one is a total or grouped count
+      # without additional `where` criteria, but that needn't necessarily be so. Also,
+      # we want ActiveRecord's structurally_incompatible_values_for check lest one
+      # calculation's `join` or `left_outer_join` make the others' values wrong.
+      calculations_from_where = @calculations.
+        map {|f| f.relation.except(:select,:group) }.
+        inject {|f, memo| memo.or(f) }
+    end
+
+    def base_groups
+      @relation.group_values.dup
+    end
+
+    def all_groups
+      # keep all base groups, even if they did something silly like group by
+      # the same key twice, but otherwise don't repeat any groups
+      groups = base_groups
+      groups_set = Set.new(groups)
+      @calculations.map {|f| f.relation.group_values }.flatten.each do |k|
+        next if groups_set.include? k
+        groups_set << k
+        groups << k
+      end
+      groups
+    end
+
+    def value_selects
+      @calculations.map {|f| f.select_value(@relation) }
+    end
+
     def lightly_touch_impure_hash(h)
       h.each do |k,v|
         h[k] = v.value if v.is_a? ChainableResult
@@ -151,7 +180,7 @@ module ActiveRecord::Summarize
     end
   end
 
-  class AggregateResult
+  class CalculationResult
     attr_reader :relation, :method, :column
 
     def initialize(relation,method,column)
@@ -169,36 +198,41 @@ module ActiveRecord::Summarize
     
     def unmatch_value
       case method
-      when :sum then 0
-      when :count then nil
-      else raise "Unknown aggregate method"
+      when "sum" then 0
+      when "count" then nil
+      else raise "Unknown calculation method"
       end
     end
 
     def function
       case method
-      when :sum then Arel::Nodes::Sum
-      when :count then Arel::Nodes::Count
-      else raise "Unknown aggregate method"
+      when "sum" then Arel::Nodes::Sum
+      when "count" then Arel::Nodes::Count
+      else raise "Unknown calculation method"
       end
     end
   end
 
-  module Methods
+  module RelationMethods
     def summarize(**opts, &block)
       raise Unsummarizable.new("Cannot summarize within a summarize block") if @summarize
       ActiveRecord::Summarize::Summarize.new(self,**opts).process(&block)
     end
+  end
 
-    def count(column_name=:id)
-      return super unless @summarize
-      column_name = :id if ['*',:all].include? column_name
-      @summarize.add_aggregation(AggregateResult.new(self,:count,aggregate_column(column_name)))
+  module InstanceMethods
+    def to_sql
+      @summarize.to_sql
     end
 
-    def sum(column_name=nil)
-      return super unless @summarize
-      @summarize.add_aggregation(AggregateResult.new(self,:sum,aggregate_column(column_name)))
+    private
+    def perform_calculation(operation, column_name)
+      case operation = operation.to_s.downcase
+      when "count", "sum"
+        column_name = :id if [nil,"*",:all].include? column_name
+        @summarize.add_calculation(CalculationResult.new(self,operation,aggregate_column(column_name)))
+      else super
+      end
     end
   end
 
@@ -212,7 +246,6 @@ class ActiveRecord::Base
   end
 end
 
-
 class ActiveRecord::Relation
-  include ActiveRecord::Summarize::Methods
+  include ActiveRecord::Summarize::RelationMethods
 end
