@@ -4,8 +4,6 @@ require_relative "summarize/version"
 require_relative "../chainable_result"
 
 module ActiveRecord::Summarize
-  class Error < StandardError; end
-
   class Unsummarizable < StandardError; end
 
   class Summarize
@@ -19,7 +17,7 @@ module ActiveRecord::Summarize
       @relation = relation
       @noop = noop
       has_base_groups = relation.group_values.any?
-      raise Error.new("`summarize` must be pure when called on a grouped relation") if pure == false && has_base_groups
+      raise Unsummarizable, "`summarize` must be pure when called on a grouped relation" if pure == false && has_base_groups
       @pure = has_base_groups || !!pure
       @calculations = []
     end
@@ -159,7 +157,7 @@ module ActiveRecord::Summarize
       other_from_where = other.except(:select, :group)
       incompatible_values = compatible_base.send(:structurally_incompatible_values_for, other_from_where)
       unless incompatible_values.empty?
-        raise ArgumentError, "Within a `summarize` block, each calculation must be structurally compatible. Incompatible values: #{incompatible_values}"
+        raise Unsummarizable, "Within a `summarize` block, each calculation must be structurally compatible. Incompatible values: #{incompatible_values}"
       end
       # Logical OR the criteria of all calculations. Most often this is equivalent
       # to `compatible_base`, since usually one is a total or grouped count without
@@ -234,7 +232,7 @@ module ActiveRecord::Summarize
 
   module RelationMethods
     def summarize(**opts, &block)
-      raise Unsummarizable.new("Cannot summarize within a summarize block") if @summarize
+      raise Unsummarizable, "Cannot summarize within a summarize block" if @summarize
       ActiveRecord::Summarize::Summarize.new(self, **opts).process(&block)
     end
   end

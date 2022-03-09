@@ -18,13 +18,21 @@ class ChainableResult
     end
   end
 
-  def to_json(**opts) = ChainableResult::Future.new(self, :to_json, [], opts)
+  def to_json(**opts)
+    ChainableResult::Future.new(self, :to_json, [], opts)
+  end
 
-  def then(&block) = ChainableResult::Future.new(self, :then, &block)
+  def then(&block)
+    ChainableResult::Future.new(self, :then, &block)
+  end
 
-  def yield_self(&block) = ChainableResult::Future.new(self, :yield_self, &block)
+  def yield_self(&block)
+    ChainableResult::Future.new(self, :yield_self, &block)
+  end
 
-  def tap(&block) = ChainableResult::Future.new(self, :tap, &block)
+  def tap(&block)
+    ChainableResult::Future.new(self, :tap, &block)
+  end
 
   def method_missing(method, *args, **opts, &block)
     ChainableResult::Future.new(self, method, args, opts, &block)
