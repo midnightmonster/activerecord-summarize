@@ -1,5 +1,5 @@
 class ChainableResult
-  def initialize(source,method=nil,args=[],opts={},&block)
+  def initialize(source, method = nil, args = [], opts = {}, &block)
     @source = source
     @method = method || (block ? :then : :itself)
     @args = args
@@ -12,19 +12,26 @@ class ChainableResult
     if use_cache?
       return @value if @cached
       @cached = true
-      @value = resolve_source.send(@method,*@args,**@opts,&@block)
+      @value = resolve_source.send(@method, *@args, **@opts, &@block)
     else
-      resolve_source.send(@method,*@args,**@opts,&@block)
+      resolve_source.send(@method, *@args, **@opts, &@block)
     end
   end
 
-  def to_json(**opts); ChainableResult::Future.new(self,:to_json,[],opts); end
-  def then(&block); ChainableResult::Future.new(self,:then,&block); end
-  def yield_self(&block); ChainableResult::Future.new(self,:yield_self,&block); end
-  def tap(&block); ChainableResult::Future.new(self,:tap,&block); end
+  def to_json(**opts) = ChainableResult::Future.new(self, :to_json, [], opts)
 
-  def method_missing(method,*args,**opts,&block)
-    ChainableResult::Future.new(self,method,args,opts,&block)
+  def then(&block) = ChainableResult::Future.new(self, :then, &block)
+
+  def yield_self(&block) = ChainableResult::Future.new(self, :yield_self, &block)
+
+  def tap(&block) = ChainableResult::Future.new(self, :tap, &block)
+
+  def method_missing(method, *args, **opts, &block)
+    ChainableResult::Future.new(self, method, args, opts, &block)
+  end
+
+  def respond_to_missing?(method_name, include_private = false)
+    true
   end
 
   class Future < self
@@ -51,7 +58,7 @@ class ChainableResult
     end
   end
 
-  def self.wrap(v,method=nil,*args,**opts,&block)
+  def self.wrap(v, method = nil, *args, **opts, &block)
     method ||= block ? :then : :itself
     klass = case v
     when ChainableResult then return v # don't wrap, exit early
@@ -59,11 +66,11 @@ class ChainableResult
     when ::Hash then ChainableResult::Hash
     else ChainableResult::Other
     end
-    klass.new(v,method,args,opts,&block)
+    klass.new(v, method, args, opts, &block)
   end
 
-  def self.with(*results,&block)
-    ChainableResult.wrap(1 == results.size ? results.first : results,:then,&block)
+  def self.with(*results, &block)
+    ChainableResult.wrap(results.size == 1 ? results.first : results, :then, &block)
   end
 
   WITH = method(:with)
@@ -80,7 +87,7 @@ class ChainableResult
   RESOLVE_ITEM = method(:resolve_item)
   CACHE_MODE_KEY = :"ChainableResult::USE_CACHE"
 
-  def self.with_cache(mode=true)
+  def self.with_cache(mode = true)
     prev = Thread.current[CACHE_MODE_KEY]
     Thread.current[CACHE_MODE_KEY] = mode
     result = yield
@@ -89,6 +96,7 @@ class ChainableResult
   end
 
   private
+
   def use_cache?
     !!Thread.current[CACHE_MODE_KEY]
   end
