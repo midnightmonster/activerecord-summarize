@@ -102,7 +102,16 @@ module ActiveRecord::Summarize
     def resolve
       # Build & execute query
       groups = all_groups
-      grouped_query = groups.any? ? from_where.group(*groups) : from_where
+      # MariaDB, SQLite, and Postgres all support `GROUP BY 1, 2, 3`-style syntax,
+      # where the numbers are 1-indexed references to SELECT values. It makes these
+      # generated queries much shorter and more readable, and it avoids the
+      # ambiguity of using aliases (for GROUP BY, they can get clobbered by columns
+      # from underlying tables) even where those are supported. But in case we find
+      # a database that doesn't support numeric references, the fully-explicit
+      # grouping code is commented out below.
+      #
+      # grouped_query = groups.any? ? from_where.group(*groups) : from_where
+      grouped_query = groups.any? ? from_where.group(*1..groups.size) : from_where
       data = grouped_query.pluck(*groups, *value_selects)
 
       # Aggregate & assign results
