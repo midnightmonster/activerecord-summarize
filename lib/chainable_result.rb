@@ -35,13 +35,13 @@ class ChainableResult
 
   class Array < self
     def resolve_source
-      @source.map &RESOLVE_ITEM
+      @source.map(&RESOLVE_ITEM)
     end
   end
 
   class Hash < self
     def resolve_source
-      @source.transform_values &RESOLVE_ITEM
+      @source.transform_values(&RESOLVE_ITEM)
     end
   end
 
