@@ -18,6 +18,7 @@ module ActiveRecord::Summarize
       @noop = noop
       has_base_groups = relation.group_values.any?
       raise Unsummarizable, "`summarize` must be pure when called on a grouped relation" if pure == false && has_base_groups
+      raise ArgumentError, "`summarize(noop: true)` is impossible on a grouped relation" if noop && has_base_groups
       @pure = has_base_groups || !!pure
       @calculations = []
     end
