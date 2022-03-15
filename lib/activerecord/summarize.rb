@@ -126,7 +126,7 @@ module ActiveRecord::Summarize
           ->(memo, row) { memo + row[value_column] }
         ]
         when 1 then [
-          Hash.new(0),
+          Hash.new(0), # Default 0 makes the reducer much cleaner, but we have to clean it up later
           ->(memo, row) {
             memo[row[group_columns[0]]] += row[value_column] unless row[value_column].zero?
             memo
@@ -147,13 +147,14 @@ module ActiveRecord::Summarize
         .group_by { |row| row[base_group_columns] }
         .tap { |h| h[[]] = [] if h.empty? && base_groups.size.zero? }
         .transform_values! do |rows|
-          values = starting_values.map(&:dup) # Some are hashes, so need to start fresh with them
+          values = starting_values.map(&:dup) # map(&:dup) since some are hashes and we don't want to mutate starting_values
           rows.each do |row|
             cols.each do |i|
               values[i] = reducers[i].call(values[i], row)
             end
           end
-          values
+          # Set any hash's default back to nil, since callers will expect a normal hash
+          values.each { |v| v.default = nil if v.is_a? Hash }
         end
     end
 
