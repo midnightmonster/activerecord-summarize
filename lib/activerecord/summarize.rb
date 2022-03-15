@@ -11,8 +11,21 @@ module ActiveRecord::Summarize
     alias_method :pure?, :pure
     alias_method :noop?, :noop
 
-    # noop: true is meant as a convenient way to test/prove the correctness of
-    # `summarize` and to compare performance of `summarize` vs not using it.
+    # noop: true
+    #   causes `summarize` simply to yield the original relation and a trivial,
+    #   synchronous `with` proc. It is meant as a convenient way to test/prove
+    #   the correctness of `summarize` and to compare performance of the single
+    #   combined query vs the original individual queries.
+    #   N.b., if `relation` already has a grouping applied, there is no direct
+    #   ActiveRecord translation for what `summarize` does, so noop: true is
+    #   impossible and raises an exception.
+    # pure: true
+    #   lets `summarize` know that you're not mutating state within the block,
+    #   so it doesn't need to go spelunking in the block binding for
+    #   ChainableResults. See `if !pure?` section below.
+    #   N.b., if `relation` already has a grouping applied, pure: true is
+    #   implied and pure: false throws an exception, as the impure behavior
+    #   would be non-obvious and of doubtful value.
     def initialize(relation, pure: nil, noop: false)
       @relation = relation
       @noop = noop
