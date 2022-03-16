@@ -7,7 +7,7 @@
 
 ## Installation
 
-Add this line to your application's Gemfile:
+Add this line to your Rails application's Gemfile:
 
 ```ruby
 gem 'activerecord-summarize'
@@ -16,10 +16,6 @@ gem 'activerecord-summarize'
 And then execute:
 
     $ bundle install
-
-Or install it yourself as:
-
-    $ gem install activerecord-summarize
 
 ## Usage
 
