@@ -3,7 +3,8 @@
 ## Why `summarize`?
 
 1. Make existing groups of related `ActiveRecord` calculations twice as fast (or more) with minimal code alteration. It's like a `go_faster` block.
-2. For more complex grouped reporting requirements, use `summarize` for legible, performant code that you couldn't have been done before without unacceptable performance or lengthy custom SQL and data-wrangling.
+
+2. For more complex reporting requirements, including nested `.group` calls, use `summarize` for fast, legible code that you just couldn't have written before without unacceptable performance or lengthy custom SQL and data-wrangling.
 
 ## Installation
 
@@ -19,26 +20,31 @@ And then execute:
 
 ## Usage
 
+#### Suppose your controller method looks like this:
+
 ```ruby
-# Suppose a controller method looks like this:
 purchases = Purchase.complete
 promotions = purchases.where.not(promotion_id: nil)
 @promotion_sales = promotions.count
 @promotion_revenue = promotions.sum(:amount)
 @by_region = purchases.group(:region_id).count
+```
 
-# Make it this instead:
+#### Make it this instead:
+
+```ruby
 Purchase.complete.summarize do |purchases|
   promotions = purchases.where.not(promotion_id: nil)
   @promotion_sales = promotions.count
   @promotion_revenue = promotions.sum(:amount)
   @by_region = purchases.group(:region_id).count
 end
-# ...and you'll have exactly the same instance variables set,
-# but only one SQL query will have been executed.
 ```
+#### ...and you'll have exactly the same instance variables set, but only one SQL query will have been executed.
 
-You can run as many calculations in a `summarize` block as it makes sense to run, so long as they all chain on the relation on which you called `summarize`. They can be on different, possibly-overlapping subsets of the original relation, i.e., they can have their own `where` clauses and even `group`. The final result of each will be exactly as it would have been if you had run each query independently, but only one query will actually be issued to the database.
+You can run as many calculations in a `summarize` block as it makes sense to run, so long as they all chain to the relation on which you called `summarize`. They can use different, possibly-overlapping subsets of the original relation, i.e., they can have their own `where` clauses and even `group`. The final result of each will be exactly as it would have been if you had run each query independently, but only one query will actually be issued to the database.
+
+### Limitations & details
 
 The only restriction is that each of the queries must be structurally compatible with the parent relation, in the same sense as is required for `relation.or(other)`. So if you wanted to display the region's name, you'd need to group by a sub-select (ew) or do the join at the top level:
 
@@ -51,7 +57,7 @@ Purchase.complete.left_joins(:region).summarize do |purchases|
 end
 ```
 
-Until the `summarize` block ends, the return value of your calculations are `ChainableResult::Future` instances, a bit like a Promise with a more convenient API. You can call any method you like on a `ChainableResult`, and you'll get back another `ChainableResult`, and they'll all turn out alright in the end—provided you called methods that would have worked if you had just run that calculation without `summarize`. OTOH, using a `ChainableResult` as an argument to another method generally will not work.
+Until the `summarize` block ends, the return value of your calculations are `ChainableResult::Future` instances, a bit like a Promise with a more convenient API. You can call any method you like on a `ChainableResult`, and you'll get back another `ChainableResult`, and they'll all turn out alright in the end—provided you called methods that would have worked if you had run that calculation without `summarize`. OTOH, using a `ChainableResult` as an argument to another method generally will not work.
 
 ```ruby
 Purchase.last_quarter.complete.summarize do |purchases|
@@ -63,7 +69,7 @@ Purchase.last_quarter.complete.summarize do |purchases|
 end
 ```
 
-If, within a `summarize` block, you want to combine data from more than one `ChainableResult`, you must use the otherwise-optional second argument yielded to the block, a `proc` I like to name `with`—and you must return the new result from the `with` block:
+If, within a `summarize` block, you want to combine data from more than one `ChainableResult`, you must use the otherwise-optional second argument yielded to the block, a `proc` I like to name `with`. Pass it all the results you want to combine and a block that combines them and returns the new result:
 
 ```ruby
 Purchase.complete.left_joins(:promotion).summarize do |purchases, with|
@@ -77,13 +83,21 @@ Purchase.complete.left_joins(:promotion).summarize do |purchases, with|
 end
 ```
 
+Treat a `with` block as a pure function: i.e., return the value you care about, and don't set or change any other state within the block. Behavior in any other case is undefined.
+
 ## Escape hatch
 
-For few-query cases where each query is well-served by its own index, `summarize` could possibly be slower than the same queries executed without it. The design intention of `summarize` is that every operation is correct, and those that can't ever be correct or aren't yet will raise exceptions—but only humans have worked on this code, so you might also wonder if `summarize` is producing correct results. Fortunately, you can easily check both with `summarize(noop: true)`, which causes `summarize` to yield the relation it was called on and a trivial `with` proc.
+The query generated by `summarize` is often much faster than equivalent queries written without it, but for few-query cases where each query is well-served by its own index, `summarize` could possibly be slower.
+
+By design, every operation performed with `summarize` is correct and corresponds to normal `ActiveRecord` behavior, and any operations that can't be done correctly this way or aren't yet will raise exceptions. But only imperfect humans have worked on this gem, so you might also wonder if `summarize` is producing correct results.
+
+Fortunately, you can easily check both with `summarize(noop: true)`, which causes `summarize` to yield the original relation it was called on and a trivial `with` proc. The block will be executed as though `summarize` were not involved, with each calculation executing separately and immediately returning numbers or hashes.
+
+If you do find any case where you get different results with `summarize(noop: true)`, I'd be grateful if you filed an issue.
 
 ## How
 
-`ActiveRecord::Relation#summarize` yields a lightly-tweaked copy of the relation that intercepts all calls to `sum` or `count` which, instead of a number or hash, return a `ChainableResult::Future`. A `ChainableResult` accepts any method called on it, returning a new `ChainableResult` that will evaluate to the result of running the method on the eventual result of its parent.
+`ActiveRecord::Relation#summarize` yields a lightly-modified copy of the relation that intercepts all calls to `sum` or `count` which, instead of a number or hash, return a `ChainableResult::Future`. A `ChainableResult` accepts any method called on it, returning a new `ChainableResult` that will evaluate to the result of running the method on the eventual result of its parent.
 
 At the end of the `summarize` block:
 
