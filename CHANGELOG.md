@@ -1,4 +1,4 @@
-## [0.2.0] - 2022-02-17
+## [0.2.1] - 2022-02-17
 
 - Initial public release
 - Wrap existing groups of related `ActiveRecord` calculations in a `summarize` block for an instant 2-5x speedup
