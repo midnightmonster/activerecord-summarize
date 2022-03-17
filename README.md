@@ -102,37 +102,17 @@ If you do find any case where you get different results with `summarize(noop: tr
 At the end of the `summarize` block:
 
 1. All the calculations are combined into a single query.
-2. The results of the query are collected into the same shapes they would have if they had been called independently. E.g., a bare `.count` returns a number, but `.group(...).count` returns a hash.
+2. The results of the query are collected into the same shapes they would have if they had been called independently. E.g., a bare `.count` returns a number, but `.group(*expressions).count` returns a hash with single value (one group expression) or array (two-plus expressions) keys.
 3. Any `ChainableResult` in the return value of the block (usually a single `ChainableResult` or an `Array` or `Hash` with `ChainableResult` values) is replaced with its resolved value.
 4. Any `ChainableResult` in the local scope of the block (i.e., `block.binding`) or an instance variable of the block context (i.e., `block.binding.receiver`) is replaced with its resolved value.
 
 N.b., if you are using `summarize` in a more functional style and will return all values you care about, you can let `summarize` know to skip step 4 by invoking it with `summarize(pure: true)`.
 
-When the parent relation already has `group` applied, `pure: true` is implied and step 4 does not take place.
+When the parent relation already has `.group` applied, `pure: true` is implied and step 4 does not take place.
 
 ## Power usage with `group`
 
-When the relation already has `group` applied, for correct results, `summarize` requires that the block mutate no state and return all values you care about—functional purity, no side effects. `ChainableResult` values referenced by instance variables or local variables not returned from the block won't be evaluated. To see why:
-
-```ruby
-# A trivial example:
-Purchase.complete.group(:region_id).summarize {|purchases| purchases.sum(:amount) }
-
-# ...is exactly equivalent to:
-Purchase.complete.group(:region_id).sum(:amount)
-
-# But if there were three regions, what should the value of @target be in this case?
-region_targets = Purchase.last_quarter.complete.group(:region_id).summarize do |purchases|
-  @target = purchases.sum(:amount) * 1.2
-end
-```
-
-As a rubyist, that last example looks like the block will be evaluated for each group, so `@target` should keep whatever value it got the last time the block was run. However:
-
-1. This is not often useful.
-2. The block is not actually linearly evaluated for each group.
-
-Instead the block is evaluated once to determine what calculations need to be run, the query is built and evaluated, and then, for each group of the parent relation, the return value of the block is evaluated with respect to just those rows belonging to the group. In practice this is quite powerful and makes a pleasant, legible API for complex reporting. I think so, anyway. E.g.:
+Build even more complex queries by using `summarize` on a relation that already has `.group` applied. Results are grouped just like a standard `.group(*expressions).count`, but instead of single numbers, the values are whatever set of calculations you return from the block, including further `.group(*more).calculate(:sum|:count,*args)` calculations, in whatever `Array` or `Hash` shape you arrange them. For example:
 
 ```ruby
 puts Purchase.last_year.complete.group(:region_id).summarize do |purchases,with|
@@ -159,6 +139,28 @@ end
 ```
 
 The ActiveRecord API has no direct analog for this, so `noop: true` is not allowed when `summarize` is called on a grouped relation.
+
+When the relation already has `group` applied, for correct results, `summarize` requires that the block mutate no state and return all values you care about: functional purity, no side effects. `ChainableResult` values referenced by instance variables or local variables not returned from the block won't be evaluated. I.e., `pure: true` is implied and `pure: false` is not allowed. To see why:
+
+```ruby
+# A trivial example:
+Purchase.complete.group(:region_id).summarize {|purchases| purchases.sum(:amount) }
+
+# ...is exactly equivalent to:
+Purchase.complete.group(:region_id).sum(:amount)
+
+# But if there were three regions, what should the value of @target be in this case?
+region_targets = Purchase.last_quarter.complete.group(:region_id).summarize do |purchases|
+  @target = purchases.sum(:amount) * 1.25
+end
+```
+
+As a rubyist, that last example looks like the block will be evaluated for each group, so `@target` should keep whatever value it got the last time the block was run. However:
+
+1. This is not often useful.
+2. The block is not actually linearly evaluated for each group.
+
+Instead the block is evaluated once to determine what calculations need to be run, the query is built and evaluated, and then, for each group of the parent relation, the return value of the block is evaluated with respect to just those rows belonging to the group. In practice this is quite powerful and makes a pleasant, legible API for complex reporting.
 
 ## Development
 
