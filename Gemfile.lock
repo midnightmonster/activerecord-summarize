@@ -1,8 +1,8 @@
 PATH
   remote: .
   specs:
-    activerecord-summarize (0.1.0)
-      activerecord (>= 4.2)
+    activerecord-summarize (0.2.0)
+      activerecord (>= 5.0)
 
 GEM
   remote: https://rubygems.org/
