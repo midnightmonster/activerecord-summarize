@@ -6,6 +6,8 @@
 
 2. For more complex reporting requirements, including nested `.group` calls, use `summarize` for fast, legible code that you just couldn't have written before without unacceptable performance or lengthy custom SQL and data-wrangling.
 
+Sidebar: Are you wondering [how `summarize` compares to `load_async`](./docs/summarize_compared_with_load_async.md)?
+
 ## Installation
 
 Add this line to your Rails application's Gemfile:
@@ -138,7 +140,11 @@ end
 # }
 ```
 
-The ActiveRecord API has no direct analog for this, so `noop: true` is not allowed when `summarize` is called on a grouped relation.
+See [Use case: moderator dashboard](./docs/use_case_moderator_dashboard.md) for a more-complete example comparing ActiveRecord-only code with `summarize`.
+
+### Caveat
+
+The ActiveRecord API has no direct analog for this mode, so `noop: true` is not allowed when `summarize` is called on a grouped relation.
 
 When the relation already has `group` applied, for correct results, `summarize` requires that the block mutate no state and return all values you care about: functional purity, no side effects. `ChainableResult` values referenced by instance variables or local variables not returned from the block won't be evaluated. I.e., `pure: true` is implied and `pure: false` is not allowed. To see why:
 
