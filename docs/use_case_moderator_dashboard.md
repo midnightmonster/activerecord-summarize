@@ -50,7 +50,7 @@ def dashboard
 end
 ```
 
-This code is straightforward and easy to read and reason about, but for a user who moderates 3 subreddits, just this part of the dashboard is going to involve 24 database queries. And anything else we want to add to the subreddit stats will be another 1-2 queries per subreddit. So if you're building this dashboard, as requirements evolve over time, it's going to get slower and slower, and eventually you're going to push back on requirements and/or rewrite the whole action as a wall of hand-crafted SQL and another wall of ruby code to get the data back into the right shape.
+This code is straightforward and easy to read and reason about, but for a user who moderates 3 subreddits, just this part of the dashboard is going to involve 18 database queries. And anything else we want to add to the subreddit stats will be another 1-2 queries per subreddit. So if you're building this dashboard, as requirements evolve over time, it's going to get slower and slower, and eventually you're going to push back on requirements and/or rewrite the whole action as a wall of hand-crafted SQL and another wall of ruby code to get the data back into the right shape.
 
 ## With `summarize`
 
