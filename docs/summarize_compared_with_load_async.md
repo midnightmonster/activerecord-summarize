@@ -8,4 +8,4 @@ If there's only one collection to load for a given controller action, the benefi
 
 ⭐️ `summarize` is for "Over the last 30 days, for each subreddit that I'm a moderator of, I need to count how many `Post` were created, and I also need to count how many of them ended up with negative karma, and I also need to see, grouped by date, what percentage of posts ended up with `karma > :karma_threshold`, and I also want to know the average number of comments per post, for all posts with karma >= 0, grouped by day of the week."
 
-`summarize` can get all that for you in a single query and return the data in a useful shape. See [use_case_moderator_dashboard](./use_case_moderator_dashboard.md) for how it might be done.
+`summarize` can get all that for you in a single query and return the data in a useful shape. See [Use case: moderator dashboard](./use_case_moderator_dashboard.md) for how it might be done.

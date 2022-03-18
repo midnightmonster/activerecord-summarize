@@ -1,7 +1,7 @@
 
 # Using `summarize` for a moderator dashboard at reddit (in my imagination)
 
-I'm an only-occasional reddit user and not a moderator at all, but lets imagine we're building a dashboard for moderators with activity and engagement stats for each subreddit they moderate. Let's suppose a straightforward Rails-y schema and a Postgres database—I have no inside knowledge about how reddit actually works, and maybe at reddit's scale you'd need an entirely different approach.
+I'm an only-occasional reddit user and not a moderator at all, but let's imagine we're building a dashboard for moderators with activity and engagement stats for each subreddit they moderate. Let's suppose a straightforward Rails-y schema and a Postgres database. (I have no inside knowledge about how reddit actually works, and maybe at reddit's scale you'd need an entirely different approach.)
 
 ## Requirements
 
