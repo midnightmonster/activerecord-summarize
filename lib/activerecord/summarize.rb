@@ -233,7 +233,7 @@ module ActiveRecord::Summarize
     def select_value(base_relation)
       where = relation.where_clause - base_relation.where_clause
       for_select = column
-      for_select = Arel::Nodes::Case.new(where.ast, unmatch_value).when(true, for_select) unless where.empty?
+      for_select = Arel::Nodes::Case.new(where.ast).when(true, for_select).else(unmatch_value) unless where.empty?
       function.new([for_select]).tap { |f| f.distinct = relation.distinct_value }
     end
 
