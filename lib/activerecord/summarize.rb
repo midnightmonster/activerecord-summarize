@@ -127,6 +127,10 @@ module ActiveRecord::Summarize
       # grouped_query = groups.any? ? from_where.group(*groups) : from_where
       grouped_query = groups.any? ? from_where.group(*1..groups.size) : from_where
       data = grouped_query.pluck(*groups, *value_selects)
+      # .pluck(:one_column) returns an array of values instead of an array of arrays,
+      # which breaks the aggregation and assignment below in case anyone ever asks
+      # `summarize` for only one thing.
+      data = data.map { |d| [d] } if (groups.size + value_selects.size) == 1
 
       # Aggregate & assign results
       group_idx = groups.each_with_index.to_h
