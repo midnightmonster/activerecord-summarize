@@ -140,7 +140,7 @@ module ActiveRecord::Summarize
         case group_columns.size
         when 0 then [
           0,
-          ->(memo, row) { memo + row[value_column] }
+          ->(memo, row) { memo + (row[value_column] || 0) }
         ]
         when 1 then [
           Hash.new(0), # Default 0 makes the reducer much cleaner, but we have to clean it up later
