@@ -11,6 +11,8 @@ For each subreddit that a user moderates, the user should see these stats with r
 - count of how many posts from this period were buried, i.e., ended up with negative karma
 - grouped by post creation date, the percentage of posts that ended up being popular, where popular means having a karma score greater than a per-subreddit-configured threshold
 - grouped by post creation day of the week, the average number of comments per non-buried post
+  
+  > *Below, grouping by day of the week is handled with `.group("EXTRACT(DOW FROM posts.created_at)")`*
 
 ## Background
 
