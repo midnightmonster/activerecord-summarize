@@ -137,6 +137,10 @@ module ActiveRecord::Summarize
       starting_values, reducers = @calculations.each_with_index.map do |f, i|
         value_column = groups.size + i
         group_columns = f.relation.group_values.map { |k| group_idx[k] }
+        # `row[value_column] || 0` pattern in reducers because SQL SUM(NULL)
+        # returns NULL, but like ActiveRecord we always want .sum to return a
+        # number, and our "starting_values and reducers" implementation means
+        # we sometimes will have to add NULL to our numbers.
         case group_columns.size
         when 0 then [
           0,
@@ -145,14 +149,14 @@ module ActiveRecord::Summarize
         when 1 then [
           Hash.new(0), # Default 0 makes the reducer much cleaner, but we have to clean it up later
           ->(memo, row) {
-            memo[row[group_columns[0]]] += row[value_column] unless row[value_column].zero?
+            memo[row[group_columns[0]]] += row[value_column] unless (row[value_column] || 0).zero?
             memo
           }
         ]
         else [
           Hash.new(0),
           ->(memo, row) {
-            memo[group_columns.map { |i| row[i] }] += row[value_column] unless row[value_column].zero?
+            memo[group_columns.map { |i| row[i] }] += row[value_column] unless (row[value_column] || 0).zero?
             memo
           }
         ]
@@ -237,14 +241,14 @@ module ActiveRecord::Summarize
     def select_value(base_relation)
       where = relation.where_clause - base_relation.where_clause
       for_select = column
-      for_select = Arel::Nodes::Case.new(where.ast).when(true, for_select).else(unmatch_value) unless where.empty?
+      for_select = Arel::Nodes::Case.new(where.ast).when(true, for_select).else(unmatch_arel_node) unless where.empty?
       function.new([for_select]).tap { |f| f.distinct = relation.distinct_value }
     end
 
-    def unmatch_value
+    def unmatch_arel_node
       case method
-      when "sum" then 0
-      when "count" then nil
+      when "sum" then 0 # Adding zero to a sum does nothing
+      when "count" then nil # In SQL, null is no value and is not counted
       else raise "Unknown calculation method"
       end
     end

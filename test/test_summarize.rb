@@ -64,4 +64,28 @@ class TestSummarize < Minitest::Test
     end
     assert_equal(exp, avg_name_length_by_cats)
   end
+
+  def test_correct_empty_result_shapes
+    # where(name: "J".."K") is empty because no words in SILLY_WORDS start with J or K
+    (many, empty, zero) = Person.summarize do |p|
+      [
+        p.group(:number_of_cats).count,
+        p.where(name: "J".."K").group(:number_of_cats).count,
+        p.where(name: "J".."K").count
+      ]
+    end
+    assert_equal false, many.empty?
+    assert_equal true, empty.is_a?(Hash) && empty.empty?
+    assert_equal true, zero.zero?
+  end
+
+  def test_null_sums_safely_reported_as_zero
+    # SQL SUM(NULL) returns NULL, but in ActiveRecord .sum always returns a number
+    exp_single = Person.sum("null") # 0
+    exp_group = Person.group(:number_of_cats).sum("null") # {0=>0, 1=>0, 2=>0, 3=>0}
+    exp_group2 = Person.group(:number_of_cats, Arel.sql("number_of_cats % 2")).sum("null") # {[0, 0]=>0, [1, 1]=>0, [2, 0]=>0, [3, 1]=>0}
+    assert_equal exp_single, Person.summarize { |p| p.sum("null") }
+    assert_equal exp_group, Person.group(:number_of_cats).summarize { |p| p.sum("null") }
+    assert_equal exp_group2, Person.group(:number_of_cats, Arel.sql("number_of_cats % 2")).summarize { |p| p.sum("null") }
+  end
 end
