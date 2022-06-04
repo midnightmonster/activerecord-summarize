@@ -46,5 +46,22 @@ class TestSummarize < Minitest::Test
       # This trivial case we actually could get right, but once we end up with additional group_values, distinct is likely to be wrong.
       Person.summarize { |p| p.distinct.count :number_of_cats }
     end
+    assert_raises(ActiveRecord::Summarize::Unsummarizable) do
+      Person.summarize { |p| p.count("distinct number_of_cats") }
+    end
+  end
+
+  def test_grouped_with_proc
+    avg_name_length_by_cats = Person.group(:number_of_cats).summarize do |p, with|
+      with[p.sum("length(name)"), p.count] do |sum, count|
+        sum.to_f / count
+      end
+    end
+    exp = Person.group(:number_of_cats).sum("length(name)").merge(
+      Person.group(:number_of_cats).count
+    ) do |_key, sum, count|
+      sum.to_f / count
+    end
+    assert_equal(exp, avg_name_length_by_cats)
   end
 end

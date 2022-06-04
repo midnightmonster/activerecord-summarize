@@ -272,6 +272,7 @@ module ActiveRecord::Summarize
       case operation = operation.to_s.downcase
       when "count", "sum"
         column_name = :id if [nil, "*", :all].include? column_name
+        raise Unsummarizable, "DISTINCT in SQL is not reliably correct with summarize" if column_name.is_a?(String) && /\bdistinct\b/i === column_name
         @summarize.add_calculation(self, operation, aggregate_column(column_name))
       else super
       end
