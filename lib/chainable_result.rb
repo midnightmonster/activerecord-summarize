@@ -69,7 +69,7 @@ class ChainableResult
   def self.wrap(v, method = nil, *args, **opts, &block)
     method ||= block ? :then : :itself
     klass = case v
-    when ChainableResult then return v # don't wrap, exit early
+    when ChainableResult then ChainableResult::Future
     when ::Array then ChainableResult::Array
     when ::Hash then ChainableResult::Hash
     else ChainableResult::Other
@@ -81,7 +81,13 @@ class ChainableResult
     ChainableResult.wrap(results.size == 1 ? results.first : results, :then, &block)
   end
 
+  def self.sync_with(*results, &block)
+    # Non-time-traveling, synchronous version of `with` for testing
+    (results.size == 1 ? results.first : results).then(&block)
+  end
+
   WITH = method(:with)
+  SYNC_WITH = method(:sync_with)
 
   def self.resolve_item(item)
     case item

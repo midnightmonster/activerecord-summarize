@@ -38,7 +38,7 @@ module ActiveRecord::Summarize
 
     def process(&block)
       # For noop, just yield the original relation and a transparent `with` proc.
-      return yield(@relation, ->(*results, &block) { [*results].then(&block) }) if noop?
+      return yield(@relation, ChainableResult::SYNC_WITH) if noop?
       # Within the block, the relation and its future clones intercept calls to
       # `count` and `sum`, registering them and returning a ChainableResult via
       # summarize.add_calculation.
