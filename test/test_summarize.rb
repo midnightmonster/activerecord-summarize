@@ -81,6 +81,40 @@ class TestSummarize < Minitest::Test
     assert_equal exp_group2, Person.group(:number_of_cats, Arel.sql("number_of_cats % 2")).summarize { |p| p.sum("null") }
   end
 
+  def test_habtm_join_trivial
+    simple_count = Club.joins(:members).group(:id, :name).count
+    summarize_count = Club.joins(:members).group(:id, :name).summarize do |clubs|
+      clubs.count
+    end
+    assert_equal simple_count, summarize_count
+  end
+
+  def test_habtm_join_summary
+    members = Club.joins(:members).group(:id, :name).count
+    long_names = Club.joins(:members).group(:id, :name).merge(Person.with_long_name).count
+    cat_owners = Club.all.each_with_object({}) do |club, obj|
+      obj[[club.id, club.name]] = club.members.group(:number_of_cats).count
+    end
+    manual = members.to_h do |k, members|
+      summary = {
+        members: members,
+        long_names: long_names[k] || 0,
+        cat_owners: cat_owners[k]
+      }
+      [k, summary]
+    end
+
+    club_summary = Club.joins(:members).group(:id, :name).summarize do |clubs|
+      {
+        members: clubs.count,
+        long_names: clubs.merge(Person.with_long_name).count,
+        cat_owners: clubs.group(:number_of_cats).count
+      }
+    end
+
+    assert_equal(manual, club_summary)
+  end
+
   private
 
   def summarizing(noop: false)
