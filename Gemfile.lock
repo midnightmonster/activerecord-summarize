@@ -1,7 +1,7 @@
 PATH
   remote: .
   specs:
-    activerecord-summarize (0.3.1)
+    activerecord-summarize (0.4.0)
       activerecord (>= 5.0)
 
 GEM

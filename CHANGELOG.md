@@ -1,3 +1,15 @@
+## [0.4.0] - 2023-02-27
+
+- **FEATURE:** Support for top-level .group(:belongs_to_association), returning hash with models as keys.
+
+  I didn't realize this until a few months ago, but in ActiveRecord, if `Foo belongs_to :bar`, you can do `Foo.group(:bar).count` and get back a hash with `Bar` records as keys and counts as values. (ActiveRecord executes two total queries to implement this, one for the counts grouped by the `bar_id` foreign key, then another to retrieve the `Bar` models.)
+
+  Now the same behavior works with `summarize`: you can still retrieve any number of counts and/or sums about `Foo`—including some with additional filters and even sub-grouping—in a single query, and then we'll execute one additional query to retrieve the records for the `Bar` model keys.
+
+- **IMPROVEMENT:** `bin/console` is now much more useful for developing `activerecord-summarize`
+
+- **IMPROVEMENT:** Added some tests for queries joining HABTM associations and (of course, supporting the new feature) `belongs_to` associations. `summarize` preceded by joins is already stable and documented, but it didn't have tests before. 
+
 ## [0.3.1] - 2022-06-23
 
 - **BUGFIX:** `with` didn't work correctly with a single argument. Embarassingly, both the time-traveling version of `with` and the trivial/fake one provided when `noop: true` is set had single argument bugs, and they were different bugs.
