@@ -28,7 +28,7 @@ ActiveRecord::Schema.define do
 end
 
 class Color < ActiveRecord::Base
-  has_many :fans, class_name: "Person"
+  has_many :fans, class_name: "Person", foreign_key: :favorite_color_id, inverse_of: :favorite_color
 end
 
 class Person < ActiveRecord::Base
