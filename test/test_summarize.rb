@@ -115,6 +115,15 @@ class TestSummarize < Minitest::Test
     assert_equal(manual, club_summary)
   end
 
+  def test_belongs_to_model_group_by
+    # Keys are Color models instead of (e.g.) colors.id scalars
+    simple_count = Person.joins(:favorite_color).group(:favorite_color).count
+    summarize_count = Person.joins(:favorite_color).group(:favorite_color).summarize do |people|
+      people.count
+    end
+    assert_equal simple_count, summarize_count
+  end
+
   private
 
   def summarizing(noop: false)

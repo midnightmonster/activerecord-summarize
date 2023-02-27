@@ -7,7 +7,7 @@ module ActiveRecord::Summarize
   class Unsummarizable < StandardError; end
 
   class Summarize
-    attr_reader :current_result_row, :pure, :noop, :from_where
+    attr_reader :current_result_row, :base_groups, :base_association, :pure, :noop, :from_where
     alias_method :pure?, :pure
     alias_method :noop?, :noop
 
@@ -29,7 +29,18 @@ module ActiveRecord::Summarize
     def initialize(relation, pure: nil, noop: false)
       @relation = relation
       @noop = noop
-      has_base_groups = relation.group_values.any?
+      @base_groups, @base_association = relation.group_values.dup.then do |group_fields|
+        # Based upon a bit from ActiveRecord::Calculations.execute_grouped_calculation,
+        # if the base relation is grouped only by a belongs_to association, group by
+        # the association's foreign key.
+        if group_fields.size == 1 && group_fields.first.respond_to?(:to_sym)
+          association = relation.klass._reflect_on_association(group_fields.first)
+          # Like ActiveRecord's group(:association).count behavior, this only works with belongs_to associations
+          next [Array(association.foreign_key), association] if association&.belongs_to?
+        end
+        [group_fields, nil]
+      end
+      has_base_groups = base_groups.any?
       raise Unsummarizable, "`summarize` must be pure when called on a grouped relation" if pure == false && has_base_groups
       raise ArgumentError, "`summarize(noop: true)` is impossible on a grouped relation" if noop && has_base_groups
       @pure = has_base_groups || !!pure
@@ -53,24 +64,38 @@ module ActiveRecord::Summarize
       ))
       ChainableResult.with_cache(!pure?) do
         # `resolve` builds the single query that answers all collected calculations,
-        # executes it, and aggregates the results by the values of
-        # `@relation.group_values``. In the common case of no `@relation.group_values`,
-        # the result is just `{[]=>[*final_value_for_each_calculation]}`
+        # executes it, and aggregates the results by the values of `base_groups`.
+        # In the common case of no `base_groups`, the resolve returns:
+        # `{[]=>[*final_value_for_each_calculation]}`
         result = resolve.transform_values! do |row|
           # Each row (in the common case, only one) is used to resolve any
           # ChainableResults returned by the block. These may be a one-to-one mapping,
-          # or the block return may have combined some results via `with` or chained
+          # or the block return may have combined some results via `with`, chained
           # additional methods on results, etc..
           @current_result_row = row
           future_block_result.value
         end.then do |result|
-          # Change ungrouped result from `{[]=>v}` to `v` and grouped-by-one-column
-          # result from `{[k1]=>v1,[k2]=>v2,...}` to `{k1=>v1,k2=>v2,...}`.
-          # (Those are both probably more common than multiple-column base grouping.)
-          case @relation.group_values.size
-          when 0 then result.values.first
-          when 1 then result.transform_keys! { |k| k.first }
-          else result
+          # Now unpack/fix-up the result keys to match shape of Relation.count or Relation.group(*cols).count return values
+          if base_groups.empty?
+            # Change ungrouped result from `{[]=>v}` to `v`, like Relation.count
+            result.values.first
+          elsif base_association
+            # Change grouped-by-one-belongs_to-association result from `{[id1]=>v1,[id2]=>v2,...}` to
+            # `{<AssociatedModel id:id1>=>v1,<AssociatedModel id:id2>=>v2,...}` like Relation.group(:association).count
+
+            # Loosely based on a bit from ActiveRecord::Calculations.execute_grouped_calculation,
+            # retrieve the records for the group association and replace the keys of our final result.
+            key_class = base_association.klass.base_class
+            key_records = key_class
+              .where(key_class.primary_key => result.keys.flatten)
+              .index_by(&:id)
+            result.transform_keys! { |k| key_records[k[0]] }
+          elsif base_groups.size == 1
+            # Change grouped-by-one-column result from `{[k1]=>v1,[k2]=>v2,...}` to `{k1=>v1,k2=>v2,...}`, like Relation.group(:column).count
+            result.transform_keys! { |k| k[0] }
+          else
+            # Multiple-column base grouping (though perhaps relatively rare) requires no change.
+            result
           end
         end
         if !pure?
@@ -166,7 +191,7 @@ module ActiveRecord::Summarize
       base_group_columns = (0...base_groups.size)
       data
         .group_by { |row| row[base_group_columns] }
-        .tap { |h| h[[]] = [] if h.empty? && base_groups.size.zero? }
+        .tap { |h| h[[]] = [] if h.empty? && base_groups.empty? }
         .transform_values! do |rows|
           values = starting_values.map(&:dup) # map(&:dup) since some are hashes and we don't want to mutate starting_values
           rows.each do |row|
@@ -201,14 +226,10 @@ module ActiveRecord::Summarize
       end
     end
 
-    def base_groups
-      @relation.group_values.dup
-    end
-
     def all_groups
       # keep all base groups, even if they did something silly like group by
       # the same key twice, but otherwise don't repeat any groups
-      groups = base_groups
+      groups = base_groups.dup
       groups_set = Set.new(groups)
       @calculations.map { |f| f.relation.group_values }.flatten.each do |k|
         next if groups_set.include? k
