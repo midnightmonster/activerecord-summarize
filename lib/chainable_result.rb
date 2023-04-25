@@ -12,9 +12,19 @@ class ChainableResult
     if use_cache?
       return @value if @cached
       @cached = true
-      @value = resolve_source.send(@method, *@args, **@opts, &@block)
+      @value = resolve_source.send(
+        @method,
+        *@args.map(&RESOLVE_ITEM),
+        **@opts.transform_values(&RESOLVE_ITEM),
+        &@block
+      )
     else
-      resolve_source.send(@method, *@args, **@opts, &@block)
+      resolve_source.send(
+        @method,
+        *@args.map(&RESOLVE_ITEM),
+        **@opts.transform_values(&RESOLVE_ITEM),
+        &@block
+      )
     end
   end
 

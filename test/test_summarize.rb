@@ -55,6 +55,28 @@ class TestSummarize < Minitest::Test
     assert_equal(exp, avg_name_length_by_cats)
   end
 
+  def test_grouped_withless
+    avg_name_length_by_cats = Person.group(:number_of_cats).summarize do |p|
+      p.sum("length(name)").to_f / p.count
+    end
+    exp = Person.group(:number_of_cats).sum("length(name)").merge(
+      Person.group(:number_of_cats).count
+    ) do |_key, sum, count|
+      sum.to_f / count
+    end
+    assert_equal(exp, avg_name_length_by_cats)
+  end
+
+  def test_most_popular_cat_number
+    most_popular_cat_number = Person.joins(:favorite_color).group(:favorite_color).summarize do |p|
+      p.group(:number_of_cats).count.max_by { |(k, v)| v }
+    end
+    exp = Color.all.to_h do |color|
+      [color, color.fans.group(:number_of_cats).count.max_by { |(k, v)| v }]
+    end
+    assert_equal(exp, most_popular_cat_number)
+  end
+
   def test_inside_grouping_with_proc
     inside_grouping_with_proc
   end
@@ -122,6 +144,23 @@ class TestSummarize < Minitest::Test
       people.count
     end
     assert_equal simple_count, summarize_count
+  end
+
+  def test_inside_grouping_withless
+    avg_name_length_by_cats = Person.summarize do |p|
+      grouped = p.group(:number_of_cats)
+      sums = grouped.sum("length(name)")
+      counts = grouped.count
+      sums.merge(counts) do |_key, sum, count|
+        sum.to_f / count
+      end
+    end
+    exp = Person.group(:number_of_cats).sum("length(name)").merge(
+      Person.group(:number_of_cats).count
+    ) do |_key, sum, count|
+      sum.to_f / count
+    end
+    assert_equal(exp, avg_name_length_by_cats)
   end
 
   private
