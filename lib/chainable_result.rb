@@ -96,8 +96,9 @@ class ChainableResult
     (results.size == 1 ? results.first : results).then(&block)
   end
 
-  WITH = method(:with)
-  SYNC_WITH = method(:sync_with)
+  # Shorter names are deprecated
+  WITH_RESOLVED = WITH = method(:with)
+  SYNC_WITH_RESOLVED = SYNC_WITH = method(:sync_with)
 
   def self.resolve_item(item)
     case item

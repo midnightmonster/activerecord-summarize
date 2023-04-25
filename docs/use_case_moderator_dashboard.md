@@ -69,19 +69,19 @@ def dashboard
   # If you forget, `daily_posts.popular.count` will raise `Unsummarizable` with a helpful message.
   all_posts = Post.where(subreddit: @subreddits.select(:id)).where(created_at: 30.days.ago..)
                   .left_joins(:popularity_threshold_setting).order(:created_at)
-  @subreddit_stats = all_posts.group(:subreddit_id).summarize do |posts, with|
+  @subreddit_stats = all_posts.group(:subreddit_id).summarize do |posts, with_resolved|
     daily_posts = posts.group("posts.created_at::date")
     dow_not_burried = posts.where(karma: 0..).group("EXTRACT(DOW FROM posts.created_at)")
     {
       posts_created: posts.count,
       buried_posts: posts.where(karma: ...0).count,
-      daily_popular_rate: with[
+      daily_popular_rate: with_resolved[
           daily_posts.popular.count,
           daily_posts.count
         ] do |popular, total|
           total.map { |date, count| [date, (popular[date]||0).to_f / count] }.to_h
         end,
-      dow_avg_comments: with[
+      dow_avg_comments: with_resolved[
           dow_not_buried.sum(:comments_count),
           dow_not_buried.count
         ] do |comments, posts|
@@ -94,4 +94,4 @@ end
 
 Since `summarize` runs a single query that visits each relevant `posts` row just once, adding additional calculations is pretty close to free.
 
-Even with the mental overhead of needing to join outside the block and use `with` to combine calculations (see [README](../README.md) for details), I think this is still easy to read, write, and reason about, and it beats the heck out of walls of SQL. What do you think?
+Even with the mental overhead of needing to join outside the block and use `with_resolved` to combine calculations (see [README](../README.md) for details), I think this is still easy to read, write, and reason about, and it beats the heck out of walls of SQL. What do you think?
