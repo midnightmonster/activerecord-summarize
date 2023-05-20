@@ -1,3 +1,9 @@
+## [0.5.0] - 2023-05-14
+
+- **FEATURE:** Your `summarize` blocks won't need to accept the proc second argument as often, because `ChainableResult` methods will also resolve their arguments. E.g., `query.summarize {|q| @mult = q.sum(:a) * q.sum(:b) }` now works, where previously you would have needed to write `query.summarize {|q,with| @mult = with[q.sum(:a),q.sum(:b)] {|a,b| a * b } }`.
+
+- **IMPROVEMENT:** The conventional name of the proc provided as an optional second argument to `summarize` blocks is now `with_resolved` instead of `with`. Interactively teaching `activerecord-summarize` to some people showed that this was an improvement in clarity. The local name of the proc has always been under your control (it's your block!), so this doesn't affect anything besides documentation and tests, but if for some reason you accessed the proc at its internal name of `ChainableResult::WITH`, that will still work, too, even though we now refer to it as `ChainableResult::WITH_RESOLVED`.
+
 ## [0.4.0] - 2023-02-27
 
 - **FEATURE:** Support for top-level .group(:belongs_to_association), returning hash with models as keys.

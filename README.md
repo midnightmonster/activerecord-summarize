@@ -59,7 +59,7 @@ Purchase.complete.left_joins(:region).summarize do |purchases|
 end
 ```
 
-Until the `summarize` block ends, the return value of your calculations are `ChainableResult::Future` instances, a bit like a Promise with a more convenient API. You can call any method you like on a `ChainableResult`, and you'll get back another `ChainableResult`, and they'll all turn out alright in the end—provided you called methods that would have worked if you had run that calculation without `summarize`. OTOH, using a `ChainableResult` as an argument to another method generally will not work.
+Until the `summarize` block ends, the return value of your calculations are `ChainableResult::Future` instances, a bit like a Promise with a more convenient API. You can call any method you like on a `ChainableResult`, and you'll get back another `ChainableResult`, and they'll all turn out alright in the end—provided you called methods that would have worked if you had run that calculation without `summarize`. OTOH, using a `ChainableResult` as an argument to a method of a non-`ChainableResult` generally will not work.
 
 ```ruby
 Purchase.last_quarter.complete.summarize do |purchases|
@@ -68,10 +68,14 @@ Purchase.last_quarter.complete.summarize do |purchases|
   @vc_projection = @sales * 3
   # And this won't:
   @vc_projection = 3 * @sales
+  # But this will work since v0.5.0...
+  @units_sold = purchases.sum(:units)
+  # ...because methods of `ChainableResult` now resolve their argument(s)
+  @avg_unit_price = @sales / @units_sold
 end
 ```
 
-If, within a `summarize` block, you want to combine data from more than one `ChainableResult`, you must use the otherwise-optional second argument yielded to the block, a `proc` I like to name `with_resolved`. Pass it all the results you want to combine and a block that combines them and returns the new result:
+If, within a `summarize` block, you want to combine data from more than one `ChainableResult`, you may need to use the otherwise-optional second argument yielded to the block, a `proc` I like to name `with_resolved`. Pass it all the results you want to combine and a block that combines them and returns the new result:
 
 ```ruby
 Purchase.complete.left_joins(:promotion).summarize do |purchases, with_resolved|
@@ -150,13 +154,13 @@ When the relation already has `group` applied, for correct results, `summarize` 
 
 ```ruby
 # A trivial example:
-Purchase.complete.group(:region_id).summarize {|purchases| purchases.sum(:amount) }
+Purchase.complete.group(:region).summarize {|purchases| purchases.sum(:amount) }
 
 # ...is exactly equivalent to:
-Purchase.complete.group(:region_id).sum(:amount)
+Purchase.complete.group(:region).sum(:amount)
 
 # But if there were three regions, what should the value of @target be in this case?
-region_targets = Purchase.last_quarter.complete.group(:region_id).summarize do |purchases|
+region_targets = Purchase.last_quarter.complete.group(:region).summarize do |purchases|
   @target = purchases.sum(:amount) * 1.25
 end
 ```
