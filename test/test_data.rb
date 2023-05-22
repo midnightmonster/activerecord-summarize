@@ -16,11 +16,12 @@ ActiveRecord::Schema.define do
 
   create_table :people, force: true do |t|
     t.string :name
+    t.integer :age
     t.integer :number_of_cats
     t.belongs_to :favorite_color, foreign_key: {to_table: :colors}
   end
 
-  connection.create_table :clubs, force: true do |t|
+  create_table :clubs, force: true do |t|
     t.string :name
   end
 
@@ -40,7 +41,8 @@ class Person < ActiveRecord::Base
   def self.generate_random!
     create!(
       name: SILLY_WORDS.sample(2).join(" "),
-      number_of_cats: rand(0..3),
+      age: rand(0...9) == 0 ? nil : rand(6..99),
+      number_of_cats: rand(0...10) == 0 ? nil : rand(0..3),
       favorite_color_id: rand(1..COLORS.length)
     )
   end

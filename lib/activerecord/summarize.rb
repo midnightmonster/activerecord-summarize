@@ -279,6 +279,7 @@ module ActiveRecord::Summarize
       when "sum" then Arel::Nodes::Sum
       when "count" then Arel::Nodes::Count
       else raise "Unknown calculation method"
+      else raise "Unknown calculation method `#{method}`"
       end
     end
   end
@@ -296,9 +297,21 @@ module ActiveRecord::Summarize
     def perform_calculation(operation, column_name)
       case operation = operation.to_s.downcase
       when "count", "sum"
-        column_name = :id if [nil, "*", :all].include? column_name
+        column_name = :id if [nil, "*", :all].include? column_name # only applies to count
         raise Unsummarizable, "DISTINCT in SQL is not reliably correct with summarize" if column_name.is_a?(String) && /\bdistinct\b/i === column_name
         @summarize.add_calculation(self, operation, aggregate_column(column_name))
+      when "average"
+        ChainableResult::WITH_RESOLVED[
+          perform_calculation("sum", column_name),
+          perform_calculation("count", column_name)
+        ] do |sum, count|
+          if sum.is_a? Hash
+            sum.to_h { |key, s| [key, s.to_d / count[key]] }
+          else
+            next nil if count == 0
+            sum.to_d / count
+          end
+        end
       else super
       end
     end
