@@ -110,18 +110,20 @@ class TestSummarize < Minitest::Test
   end
 
   def test_correct_empty_result_shapes
-    # where(name: "J".."K") is empty because no words in SILLY_WORDS start with J or K
-    (many, empty, zero) = compare_noop do |noop|
+    # where(name: "J"..."L") is empty because no words in SILLY_WORDS start with J or K
+    (many, empty1, empty2, zero) = compare_noop do |noop|
       Person.summarize(noop: noop) do |p|
         [
           p.group(:number_of_cats).count,
-          p.where(name: "J".."K").group(:number_of_cats).count,
-          p.where(name: "J".."K").count
+          p.where(name: "J"..."L").group(:number_of_cats).count,
+          p.where(name: "J"..."L").group(:number_of_cats, :age).count,
+          p.where(name: "J"..."L").count
         ]
       end
     end
     assert_equal false, many.empty?
-    assert_equal true, empty.is_a?(Hash) && empty.empty?
+    assert_equal true, empty1.is_a?(Hash) && empty1.empty?
+    assert_equal true, empty2.is_a?(Hash) && empty2.empty?
     assert_equal true, zero.zero?
   end
 

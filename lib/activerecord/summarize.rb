@@ -130,9 +130,9 @@ module ActiveRecord::Summarize
       end
     end
 
-    def add_calculation(relation, operation, column_name)
+    def add_calculation(operation, relation, column_name)
       merge_from_where!(relation)
-      calculation = CalculationResult.new(relation, operation, column_name)
+      calculation = CalculationImplementation.new(operation, relation, column_name)
       index = @calculations.size
       @calculations << calculation
       ChainableResult.wrap(calculation) { current_result_row[index] }
@@ -162,26 +162,30 @@ module ActiveRecord::Summarize
       starting_values, reducers = @calculations.each_with_index.map do |f, i|
         value_column = groups.size + i
         group_columns = f.relation.group_values.map { |k| group_idx[k] }
-        # `row[value_column] || 0` pattern in reducers because SQL SUM(NULL)
-        # returns NULL, but like ActiveRecord we always want .sum to return a
-        # number, and our "starting_values and reducers" implementation means
-        # we sometimes will have to add NULL to our numbers.
+        initial = f.initial
+        reducer = f.method(:reducer)
         case group_columns.size
         when 0 then [
-          0,
-          ->(memo, row) { memo + (row[value_column] || 0) }
+          initial,
+          ->(memo, row) { reducer.call(memo, row[value_column]) }
         ]
         when 1 then [
-          Hash.new(0), # Default 0 makes the reducer much cleaner, but we have to clean it up later
+          {},
           ->(memo, row) {
-            memo[row[group_columns[0]]] += row[value_column] unless (row[value_column] || 0).zero?
+            key = row[group_columns[0]]
+            prev_val = memo[key] || initial
+            next_val = reducer.call(prev_val, row[value_column])
+            memo[key] = next_val unless next_val == prev_val
             memo
           }
         ]
         else [
-          Hash.new(0),
+          {},
           ->(memo, row) {
-            memo[group_columns.map { |i| row[i] }] += row[value_column] unless (row[value_column] || 0).zero?
+            key = group_columns.map { |i| row[i] }
+            prev_val = memo[key] || initial
+            next_val = reducer.call(prev_val, row[value_column])
+            memo[key] = next_val unless next_val == prev_val
             memo
           }
         ]
@@ -199,8 +203,7 @@ module ActiveRecord::Summarize
               values[i] = reducers[i].call(values[i], row)
             end
           end
-          # Set any hash's default back to nil, since callers will expect a normal hash
-          values.each { |v| v.default = nil if v.is_a? Hash }
+          values
         end
     end
 
@@ -240,7 +243,7 @@ module ActiveRecord::Summarize
     end
 
     def value_selects
-      @calculations.map { |f| f.select_value(@relation) }
+      @calculations.map { |f| f.select_column_arel_node(@relation) }
     end
 
     def lightly_touch_impure_hash(h)
@@ -250,36 +253,132 @@ module ActiveRecord::Summarize
     end
   end
 
-  class CalculationResult
-    attr_reader :relation, :method, :column
-
-    def initialize(relation, method, column)
-      @relation = relation
-      @method = method
-      @column = column
+  module CalculationImplementation
+    def self.new(operation, relation, column_name)
+      case operation
+      when "sum" then CalculationImplementation::Sum
+      when "count" then CalculationImplementation::Count
+      when "minimum" then CalculationImplementation::Minimum
+      when "maximum" then CalculationImplementation::Maximum
+      else raise "Unknown calculation #{operation}"
+      end.new(relation, column_name)
     end
 
-    def select_value(base_relation)
-      where = relation.where_clause - base_relation.where_clause
-      for_select = column
-      for_select = Arel::Nodes::Case.new(where.ast).when(true, for_select).else(unmatch_arel_node) unless where.empty?
-      function.new([for_select]).tap { |f| f.distinct = relation.distinct_value }
-    end
+    class Base
+      attr_reader :relation, :column
 
-    def unmatch_arel_node
-      case method
-      when "sum" then 0 # Adding zero to a sum does nothing
-      when "count" then nil # In SQL, null is no value and is not counted
-      else raise "Unknown calculation method"
+      def initialize(relation, column)
+        @relation = relation
+        @column = column
+      end
+
+      def select_column_arel_node(base_relation)
+        where = relation.where_clause - base_relation.where_clause
+        for_select = column
+        for_select = Arel::Nodes::Case.new(where.ast).when(true, for_select).else(unmatch_arel_node) unless where.empty?
+        function_arel_node_class.new([for_select]).tap { |f| f.distinct = relation.distinct_value }
+      end
+
+      def function_arel_node_class
+        # Arel::Node class representing the SQL function
+        raise "`#{self.class}` must implement `function_arel_node_class`"
+      end
+
+      def unmatch_arel_node
+        # In case of `where` filters, this is the does-not-count value for when
+        # filters don't match, so far always 0 or nil (becomes NULL)
+        raise "`#{self.class}` must implement `unmatch_arel_node`"
+      end
+
+      def initial
+        # Initial value for reducing potentially many split-into-groups rows to
+        # a single value, so far always 0 or nil.
+        raise "`#{self.class}` must implement `initial`"
+      end
+
+      def reducer(memo, v)
+        # Reducer method for reducing potentially many split-into-groups rows to
+        # a single value. Method should return a value the same type as memo
+        # and/or v. A reducer is necessary at all because .group in columns
+        # _other than_ this one results in fragmenting this result into several
+        # rows.
+        raise "`#{self.class}` must implement `reducer`"
       end
     end
 
-    def function
-      case method
-      when "sum" then Arel::Nodes::Sum
-      when "count" then Arel::Nodes::Count
-      else raise "Unknown calculation method"
-      else raise "Unknown calculation method `#{method}`"
+    class Sum < Base
+      def unmatch_arel_node
+        0 # Adding zero to a sum does nothing
+      end
+
+      def function_arel_node_class
+        Arel::Nodes::Sum
+      end
+
+      def initial
+        0
+      end
+
+      def reducer(memo, v)
+        memo + (v || 0)
+      end
+    end
+
+    class Count < Base
+      def unmatch_arel_node
+        nil # In SQL, null is no value and is not counted
+      end
+
+      def function_arel_node_class
+        Arel::Nodes::Count
+      end
+
+      def initial
+        0
+      end
+
+      def reducer(memo, v)
+        memo + (v || 0)
+      end
+    end
+
+    class Minimum < Base
+      def unmatch_arel_node
+        nil # In SQL, null is no value and is not considered for min()
+      end
+
+      def function_arel_node_class
+        Arel::Nodes::Min
+      end
+
+      def initial
+        nil
+      end
+
+      def reducer(memo, v)
+        return memo if v.nil?
+        return v if memo.nil?
+        v < memo ? v : memo
+      end
+    end
+
+    class Maximum < Base
+      def unmatch_arel_node
+        nil # In SQL, null is no value and is not considered for max()
+      end
+
+      def function_arel_node_class
+        Arel::Nodes::Max
+      end
+
+      def initial
+        nil
+      end
+
+      def reducer(memo, v)
+        return memo if v.nil?
+        return v if memo.nil?
+        v > memo ? v : memo
       end
     end
   end
@@ -299,7 +398,7 @@ module ActiveRecord::Summarize
       when "count", "sum"
         column_name = :id if [nil, "*", :all].include? column_name # only applies to count
         raise Unsummarizable, "DISTINCT in SQL is not reliably correct with summarize" if column_name.is_a?(String) && /\bdistinct\b/i === column_name
-        @summarize.add_calculation(self, operation, aggregate_column(column_name))
+        @summarize.add_calculation(operation, self, aggregate_column(column_name))
       when "average"
         ChainableResult::WITH_RESOLVED[
           perform_calculation("sum", column_name),
@@ -312,6 +411,8 @@ module ActiveRecord::Summarize
             sum.to_d / count
           end
         end
+      when "minimum", "maximum"
+        @summarize.add_calculation(operation, self, aggregate_column(column_name))
       else super
       end
     end
