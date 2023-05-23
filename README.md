@@ -127,6 +127,7 @@ puts Purchase.last_year.complete.group(:region_id).summarize do |purchases,with_
   target = with_resolved[total / 4, by_quarter.values.max] {|avg_q, best_q| [avg_q * 1.25, best_q].max.round }
   {last_year: total, quarters: by_quarter, unit_target: target}
 end
+
 # Output:
 # {
 #   1 => {

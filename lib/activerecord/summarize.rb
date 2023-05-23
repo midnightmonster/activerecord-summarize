@@ -140,42 +140,39 @@ module ActiveRecord::Summarize
     end
 
     def resolve
-      # Build & execute query
+      #########################
+      # Build & execute query #
+      #########################
       groups = all_groups
       # MariaDB, SQLite, and Postgres all support `GROUP BY 1, 2, 3`-style syntax,
-      # where the numbers are 1-indexed references to SELECT values. It makes these
-      # generated queries much shorter and more readable, and it avoids the
-      # ambiguity of using aliases (for GROUP BY, they can get clobbered by columns
-      # from underlying tables) even where those are supported. But in case we find
-      # a database that doesn't support numeric references, the fully-explicit
-      # grouping code is commented out below.
-      #
-      # grouped_query = groups.any? ? from_where.group(*groups) : from_where
+      # where the numbers are 1-indexed references to SELECT values.
       grouped_query = groups.any? ? from_where.group(*1..groups.size) : from_where
       data = grouped_query.pluck(*groups, *value_selects)
-      # .pluck(:one_column) returns an array of values instead of an array of arrays,
-      # which breaks the aggregation and assignment below in case anyone ever asks
-      # `summarize` for only one thing.
+
+      # .pluck(:just_one_column) returns an array of values instead of an array
+      # of arrays, which breaks the aggregation and assignment below.
       data = data.map { |d| [d] } if (groups.size + value_selects.size) == 1
 
-      # Aggregate & assign results
-      group_idx = groups.each_with_index.to_h
+      ##############################
+      # Build aggregation reducers #
+      ##############################
+      # groups includes all base groups and all sub-groups
+      group_idx = groups.each_with_index.to_h # Inverts the groups list: `[:foo, :bar]` becomes `{:foo => 0, :bar => 1}`
       starting_values, reducers = @calculations.each_with_index.map do |f, i|
         value_column = groups.size + i
+        # each calculation shares any base groups that exist and may have sub-groups, which won't be shared by others
         group_columns = f.relation.group_values.map { |k| group_idx[k] }
-        initial = f.initial
-        reducer = f.method(:reducer)
         case group_columns.size
         when 0 then [
-          initial,
-          ->(memo, row) { reducer.call(memo, row[value_column]) }
+          f.initial,
+          ->(memo, row) { f.reducer(memo, row[value_column]) }
         ]
         when 1 then [
           {},
           ->(memo, row) {
             key = row[group_columns[0]]
-            prev_val = memo[key] || initial
-            next_val = reducer.call(prev_val, row[value_column])
+            prev_val = memo[key] || f.initial
+            next_val = f.reducer(prev_val, row[value_column])
             memo[key] = next_val unless next_val == prev_val
             memo
           }
@@ -184,8 +181,8 @@ module ActiveRecord::Summarize
           {},
           ->(memo, row) {
             key = group_columns.map { |i| row[i] }
-            prev_val = memo[key] || initial
-            next_val = reducer.call(prev_val, row[value_column])
+            prev_val = memo[key] || f.initial
+            next_val = f.reducer(prev_val, row[value_column])
             memo[key] = next_val unless next_val == prev_val
             memo
           }

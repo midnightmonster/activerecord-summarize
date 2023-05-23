@@ -57,8 +57,8 @@ class Person < ActiveRecord::Base
   def self.generate_random!
     create!(
       name: SILLY_WORDS.sample(2).join(" "),
-      age: rand(0...9) == 0 ? nil : rand(6.0...100.0),
-      number_of_cats: rand(0...10) == 0 ? nil : rand(0..3),
+      age: (rand(0...9) == 0) ? nil : rand(6.0...100.0),
+      number_of_cats: (rand(0...10) == 0) ? nil : rand(0..3),
       favorite_color_id: rand(1..COLORS.length)
     )
   end

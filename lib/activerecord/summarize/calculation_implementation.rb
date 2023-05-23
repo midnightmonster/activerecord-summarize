@@ -103,7 +103,7 @@ module ActiveRecord::Summarize::CalculationImplementation
     def reducer(memo, v)
       return memo if v.nil?
       return v if memo.nil?
-      v < memo ? v : memo
+      (v < memo) ? v : memo
     end
   end
 
@@ -123,7 +123,7 @@ module ActiveRecord::Summarize::CalculationImplementation
     def reducer(memo, v)
       return memo if v.nil?
       return v if memo.nil?
-      v > memo ? v : memo
+      (v > memo) ? v : memo
     end
   end
 end
