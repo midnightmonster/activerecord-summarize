@@ -1,3 +1,7 @@
+## [0.5.1] - 2023-08-16
+
+- **BUGFIX:** Starting with version 7.0.5, the behavior of ActiveRecord's `pluck` changed: when you pluck multiple values with the same aggregate function (e.g., `sum`), in PostgreSQL, the data type of the last such value is now applied to all such values, though they used to be inferred correctly. Our solution is to add an explicit alias to each result column.
+
 ## [0.5.0] - 2023-05-14
 
 - **FEATURE:** Your `summarize` blocks won't need to accept the proc second argument as often, because `ChainableResult` methods will also resolve their arguments. E.g., `query.summarize {|q| @mult = q.sum(:a) * q.sum(:b) }` now works, where previously you would have needed to write `query.summarize {|q,with| @mult = with[q.sum(:a),q.sum(:b)] {|a,b| a * b } }`.
