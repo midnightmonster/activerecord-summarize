@@ -174,7 +174,9 @@ Instead the block is evaluated once to determine what calculations need to be ru
 
 ## Development
 
-After checking out the repo, run `bin/setup` to install dependencies. Then, run `rake test` to run the tests. You can also run `bin/console` for an interactive prompt that will allow you to experiment.
+Run `bin/setup` to install dependencies. If you don't have PostgreSQL installed, comment out the `pg` line in `Gemfile` first. Then, run `bundle exec rake test` to run the tests. You can also run `bin/console` for an interactive prompt that will allow you to experiment.
+
+Tests and `bin/console` support SQLite and PostgreSQL: (un)comment the appropriate lines at the top of `test/test_data.rb` to choose. In the future, we'll have a nicer solution. If you want to use PostgreSQL, run `CREATE DATABASE summarize_test;` as your default user.
 
 To install this gem onto your local machine, run `bundle exec rake install`. To release a new version, update the version number in `version.rb`, and then run `bundle exec rake release`, which will create a git tag for the version, push git commits and the created tag, and push the `.gem` file to [rubygems.org](https://rubygems.org).
 

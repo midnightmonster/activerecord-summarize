@@ -31,6 +31,20 @@ class TestSummarize < Minitest::Test
     summarizing(noop: true)
   end
 
+  def test_sum_of_float_and_int
+    # Starting with Rails 7.0.5, continuing through (at least) 7.0.7, in PostgreSQL only,
+    # plucking the same aggregate function (e.g., sum) more than once without an alias
+    # results in all such columns getting cast to the type of the last such column.
+    people = Person.where.not(age: nil)
+    a = people.summarize(noop: true) do |p|
+      [p.sum(:age), p.sum(:number_of_cats)]
+    end
+    b = people.summarize(noop: false) do |p|
+      [p.sum(:age), p.sum(:number_of_cats)]
+    end
+    assert_equal(a, b)
+  end
+
   def test_prevents_distinct
     assert_raises(ActiveRecord::Summarize::Unsummarizable) do
       # This trivial case we actually could get right, but once we end up with additional group_values, distinct is likely to be wrong.
@@ -69,10 +83,10 @@ class TestSummarize < Minitest::Test
 
   def test_most_popular_cat_number
     most_popular_cat_number = Person.joins(:favorite_color).group(:favorite_color).summarize do |p|
-      p.group(:number_of_cats).count.max_by { |(k, v)| v }
+      p.group(:number_of_cats).count.max_by { |(k, v)| [v, k] }
     end
     exp = Color.all.to_h do |color|
-      [color, color.fans.group(:number_of_cats).count.max_by { |(k, v)| v }]
+      [color, color.fans.group(:number_of_cats).count.max_by { |(k, v)| [v, k] }]
     end
     assert_equal(exp, most_popular_cat_number)
   end
@@ -95,12 +109,15 @@ class TestSummarize < Minitest::Test
 
   def test_null_sums_safely_reported_as_zero
     # SQL SUM(NULL) returns NULL, but in ActiveRecord .sum always returns a number
-    exp_single = Person.sum("null") # 0
-    exp_group = Person.group(:number_of_cats).sum("null") # {0=>0, 1=>0, 2=>0, 3=>0}
-    exp_group2 = Person.group(:number_of_cats, Arel.sql("number_of_cats % 2")).sum("null") # {[0, 0]=>0, [1, 1]=>0, [2, 0]=>0, [3, 1]=>0}
-    assert_equal exp_single, Person.summarize { |p| p.sum("null") }
-    assert_equal exp_group, Person.group(:number_of_cats).summarize { |p| p.sum("null") }
-    assert_equal exp_group2, Person.group(:number_of_cats, Arel.sql("number_of_cats % 2")).summarize { |p| p.sum("null") }
+    # TODO: There's a small inconsistency with .sum of a Float or Decimal column when the calculation result is null:
+    #  - ActiveRecord.sum returns 0.0
+    #  - .sum inside a summarize block returns integer 0
+    exp_single = Person.where(age: nil).sum(:age) # 0.0
+    exp_group = Person.group(:number_of_cats).where(age: nil).sum(:age) # {0=>0.0, 1=>0.0, 2=>0.0, 3=>0.0}
+    exp_group2 = Person.group(:number_of_cats, Arel.sql("number_of_cats % 2")).where(age: nil).sum(:age) # {[0, 0]=>0.0, [1, 1]=>0.0, [2, 0]=>0.0, [3, 1]=>0.0}
+    assert_equal exp_single, Person.summarize { |p| p.where(age: nil).sum(:age) }
+    assert_equal exp_group, Person.group(:number_of_cats).summarize { |p| p.where(age: nil).sum(:age) }
+    assert_equal exp_group2, Person.group(:number_of_cats, Arel.sql("number_of_cats % 2")).summarize { |p| p.where(age: nil).sum(:age) }
   end
 
   def test_habtm_join_trivial

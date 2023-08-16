@@ -240,7 +240,10 @@ module ActiveRecord::Summarize
     end
 
     def value_selects
-      @calculations.map { |f| f.select_value(@relation) }
+      @calculations.each_with_index.map do |f, i|
+        f.select_value(@relation)
+          .as("_v#{i}") # In Postgres with certain Rails versions, alias is needed to disambiguate result column names for type information
+      end
     end
 
     def lightly_touch_impure_hash(h)
