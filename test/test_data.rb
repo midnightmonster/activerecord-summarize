@@ -1,8 +1,17 @@
 require_relative "./test_helper"
 
-database = ":memory:"
-ENV["DATABASE_URL"] = "sqlite3:#{database}"
-ActiveRecord::Base.establish_connection(adapter: "sqlite3", database: database)
+# Choose a connection. In the future, we'll come up with some way to automate it.
+
+ActiveRecord::Base.establish_connection(
+  adapter: "sqlite3",
+  database: ":memory:"
+)
+
+# ActiveRecord::Base.establish_connection(
+#   adapter: "postgresql",
+#   encoding: "unicode",
+#   database: "summarize_test"
+# )
 stdout_logger = Logger.new($stdout)
 # ActiveRecord::Base.logger = stdout_logger # Usually don't want to see all the inserts, but if you're changing them you might
 
@@ -10,17 +19,25 @@ SILLY_WORDS = %w[Abibliophobia Absquatulate Batrachomyomachy Bibble Billingsgate
 COLORS = %w[Red Orange Yellow Green Blue Indigo Violet]
 
 ActiveRecord::Schema.define do
+  # In Postgres, must drop tables explicitly in reverse order so that foreign
+  # keys don't get in the way. In SQLite :memory: db, these lines do nothing.
+  drop_table :clubs_people, if_exists: true
+  drop_table :clubs, if_exists: true
+  drop_table :people, if_exists: true
+  drop_table :colors, if_exists: true
+
   create_table :colors, force: true do |t|
     t.string :name
   end
 
   create_table :people, force: true do |t|
     t.string :name
+    t.float :age
     t.integer :number_of_cats
     t.belongs_to :favorite_color, foreign_key: {to_table: :colors}
   end
 
-  connection.create_table :clubs, force: true do |t|
+  create_table :clubs, force: true do |t|
     t.string :name
   end
 
@@ -40,6 +57,7 @@ class Person < ActiveRecord::Base
   def self.generate_random!
     create!(
       name: SILLY_WORDS.sample(2).join(" "),
+      age: rand(0..9).zero? ? nil : rand(18.0...100.0),
       number_of_cats: rand(0..3),
       favorite_color_id: rand(1..COLORS.length)
     )
