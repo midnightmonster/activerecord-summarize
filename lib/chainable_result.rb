@@ -88,12 +88,12 @@ class ChainableResult
   end
 
   def self.with(*results, &block)
-    ChainableResult.wrap(results.size == 1 ? results.first : results, :then, &block)
+    ChainableResult.wrap((results.size == 1) ? results.first : results, :then, &block)
   end
 
   def self.sync_with(*results, &block)
     # Non-time-traveling, synchronous version of `with` for testing
-    (results.size == 1 ? results.first : results).then(&block)
+    ((results.size == 1) ? results.first : results).then(&block)
   end
 
   # Shorter names are deprecated
