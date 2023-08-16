@@ -69,10 +69,10 @@ class TestSummarize < Minitest::Test
 
   def test_most_popular_cat_number
     most_popular_cat_number = Person.joins(:favorite_color).group(:favorite_color).summarize do |p|
-      p.group(:number_of_cats).count.max_by { |(k, v)| v }
+      p.group(:number_of_cats).count.max_by { |(k, v)| [v, k] }
     end
     exp = Color.all.to_h do |color|
-      [color, color.fans.group(:number_of_cats).count.max_by { |(k, v)| v }]
+      [color, color.fans.group(:number_of_cats).count.max_by { |(k, v)| [v, k] }]
     end
     assert_equal(exp, most_popular_cat_number)
   end
