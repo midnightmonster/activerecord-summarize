@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative "summarize/version"
+require_relative "summarize/calculation_implementation"
 require_relative "../chainable_result"
 
 module ActiveRecord::Summarize
@@ -130,58 +131,59 @@ module ActiveRecord::Summarize
       end
     end
 
-    def add_calculation(relation, operation, column_name)
+    def add_calculation(operation, relation, column_name)
       merge_from_where!(relation)
-      calculation = CalculationResult.new(relation, operation, column_name)
+      calculation = CalculationImplementation.new(operation, relation, column_name)
       index = @calculations.size
       @calculations << calculation
       ChainableResult.wrap(calculation) { current_result_row[index] }
     end
 
     def resolve
-      # Build & execute query
+      #########################
+      # Build & execute query #
+      #########################
       groups = all_groups
       # MariaDB, SQLite, and Postgres all support `GROUP BY 1, 2, 3`-style syntax,
-      # where the numbers are 1-indexed references to SELECT values. It makes these
-      # generated queries much shorter and more readable, and it avoids the
-      # ambiguity of using aliases (for GROUP BY, they can get clobbered by columns
-      # from underlying tables) even where those are supported. But in case we find
-      # a database that doesn't support numeric references, the fully-explicit
-      # grouping code is commented out below.
-      #
-      # grouped_query = groups.any? ? from_where.group(*groups) : from_where
+      # where the numbers are 1-indexed references to SELECT values.
       grouped_query = groups.any? ? from_where.group(*1..groups.size) : from_where
       data = grouped_query.pluck(*groups, *value_selects)
-      # .pluck(:one_column) returns an array of values instead of an array of arrays,
-      # which breaks the aggregation and assignment below in case anyone ever asks
-      # `summarize` for only one thing.
+
+      # .pluck(:just_one_column) returns an array of values instead of an array
+      # of arrays, which breaks the aggregation and assignment below.
       data = data.map { |d| [d] } if (groups.size + value_selects.size) == 1
 
-      # Aggregate & assign results
-      group_idx = groups.each_with_index.to_h
+      ##############################
+      # Build aggregation reducers #
+      ##############################
+      # groups includes all base groups and all sub-groups
+      group_idx = groups.each_with_index.to_h # Inverts the groups list: `[:foo, :bar]` becomes `{:foo => 0, :bar => 1}`
       starting_values, reducers = @calculations.each_with_index.map do |f, i|
         value_column = groups.size + i
+        # each calculation shares any base groups that exist and may have sub-groups, which won't be shared by others
         group_columns = f.relation.group_values.map { |k| group_idx[k] }
-        # `row[value_column] || 0` pattern in reducers because SQL SUM(NULL)
-        # returns NULL, but like ActiveRecord we always want .sum to return a
-        # number, and our "starting_values and reducers" implementation means
-        # we sometimes will have to add NULL to our numbers.
         case group_columns.size
         when 0 then [
-          0,
-          ->(memo, row) { memo + (row[value_column] || 0) }
+          f.initial,
+          ->(memo, row) { f.reducer(memo, row[value_column]) }
         ]
         when 1 then [
-          Hash.new(0), # Default 0 makes the reducer much cleaner, but we have to clean it up later
+          {},
           ->(memo, row) {
-            memo[row[group_columns[0]]] += row[value_column] unless (row[value_column] || 0).zero?
+            key = row[group_columns[0]]
+            prev_val = memo[key] || f.initial
+            next_val = f.reducer(prev_val, row[value_column])
+            memo[key] = next_val unless next_val == prev_val
             memo
           }
         ]
         else [
-          Hash.new(0),
+          {},
           ->(memo, row) {
-            memo[group_columns.map { |i| row[i] }] += row[value_column] unless (row[value_column] || 0).zero?
+            key = group_columns.map { |i| row[i] }
+            prev_val = memo[key] || f.initial
+            next_val = f.reducer(prev_val, row[value_column])
+            memo[key] = next_val unless next_val == prev_val
             memo
           }
         ]
@@ -199,8 +201,7 @@ module ActiveRecord::Summarize
               values[i] = reducers[i].call(values[i], row)
             end
           end
-          # Set any hash's default back to nil, since callers will expect a normal hash
-          values.each { |v| v.default = nil if v.is_a? Hash }
+          values
         end
     end
 
@@ -241,7 +242,7 @@ module ActiveRecord::Summarize
 
     def value_selects
       @calculations.each_with_index.map do |f, i|
-        f.select_value(@relation)
+        f.select_column_arel_node(@relation)
           .as("_v#{i}") # In Postgres with certain Rails versions, alias is needed to disambiguate result column names for type information
       end
     end
@@ -249,39 +250,6 @@ module ActiveRecord::Summarize
     def lightly_touch_impure_hash(h)
       h.each do |k, v|
         h[k] = v.value if v.is_a? ChainableResult
-      end
-    end
-  end
-
-  class CalculationResult
-    attr_reader :relation, :method, :column
-
-    def initialize(relation, method, column)
-      @relation = relation
-      @method = method
-      @column = column
-    end
-
-    def select_value(base_relation)
-      where = relation.where_clause - base_relation.where_clause
-      for_select = column
-      for_select = Arel::Nodes::Case.new(where.ast).when(true, for_select).else(unmatch_arel_node) unless where.empty?
-      function.new([for_select]).tap { |f| f.distinct = relation.distinct_value }
-    end
-
-    def unmatch_arel_node
-      case method
-      when "sum" then 0 # Adding zero to a sum does nothing
-      when "count" then nil # In SQL, null is no value and is not counted
-      else raise "Unknown calculation method"
-      end
-    end
-
-    def function
-      case method
-      when "sum" then Arel::Nodes::Sum
-      when "count" then Arel::Nodes::Count
-      else raise "Unknown calculation method"
       end
     end
   end
@@ -299,9 +267,23 @@ module ActiveRecord::Summarize
     def perform_calculation(operation, column_name)
       case operation = operation.to_s.downcase
       when "count", "sum"
-        column_name = :id if [nil, "*", :all].include? column_name
+        column_name = :id if [nil, "*", :all].include? column_name # only applies to count
         raise Unsummarizable, "DISTINCT in SQL is not reliably correct with summarize" if column_name.is_a?(String) && /\bdistinct\b/i === column_name
-        @summarize.add_calculation(self, operation, aggregate_column(column_name))
+        @summarize.add_calculation(operation, self, aggregate_column(column_name))
+      when "average"
+        ChainableResult::WITH_RESOLVED[
+          perform_calculation("sum", column_name),
+          perform_calculation("count", column_name)
+        ] do |sum, count|
+          if sum.is_a? Hash
+            sum.to_h { |key, s| [key, s.to_d / count[key]] }
+          else
+            next nil if count == 0
+            sum.to_d / count
+          end
+        end
+      when "minimum", "maximum"
+        @summarize.add_calculation(operation, self, aggregate_column(column_name))
       else super
       end
     end
