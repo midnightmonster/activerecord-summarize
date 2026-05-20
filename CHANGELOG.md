@@ -1,3 +1,7 @@
+## [0.6.0] - 2026-05-20
+
+- **FEATURE:** Support for `.average`, `.minimum`, and `.maximum` inside `summarize` blocks. All three work with the same flexibility as `.count` and `.sum`: they can be combined freely with each other and with other calculation methods, support `.where` and `.group` sub-scopes, and their results are chainable just like any other `ChainableResult`.
+
 ## [0.5.1] - 2023-08-16
 
 - **BUGFIX:** Starting with version 7.0.5, the behavior of ActiveRecord's `pluck` changed: when you pluck multiple values with the same aggregate function (e.g., `sum`), in PostgreSQL, the data type of the last such value is now applied to all such values, though they used to be inferred correctly. Our solution is to add an explicit alias to each result column.
